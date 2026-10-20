@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{TITLE}} · 可视化解读</title>
+<!-- 首页索引（build_index.py）读取以下 viz:* 元信息 -->
+<meta name="viz:title" content="{{TITLE}}">
+<meta name="viz:summary" content="{{SUMMARY}}">
+<meta name="viz:source" content="{{SOURCE_URL}}">
+<meta name="viz:author" content="{{AUTHOR}}">
+<meta name="viz:date" content="{{DATE}}">
+<meta name="viz:tags" content="{{TAGS}}">
+<!-- KaTeX：优先本地 _lib，失败时 viz-core 自动回退 CDN -->
+<link rel="stylesheet" href="{{KATEX_BASE}}katex.min.css">
+<script src="{{KATEX_BASE}}katex.min.js"></script>
+<script src="{{KATEX_BASE}}contrib/auto-render.min.js"></script>
+<style>
+/* ==== viz-core.css（内联快照，勿手改；页面专属样式写在下方） ==== */
+{{VIZ_CSS}}
+/* ==== 页面专属样式 ==== */
+</style>
+</head>
+<body>
+<header class="hero">
+  <h1>{{TITLE}}</h1>
+  <p>{{HOOK}}</p>
+  <p class="src">解读自 {{AUTHOR}}《<a href="{{SOURCE_URL}}" target="_blank">{{SOURCE_TITLE}}</a>》</p>
+</header>
+<nav class="toc">
+  <a href="#s0">⓪ 大白话版</a>
+  <!-- TODO: 每个正文章节一个链接，如 <a href="#s1">① 问题</a> -->
+  <a href="#summary">小结</a><a href="#gloss">📖 术语表</a>
+</nav>
+<main>
+
+<!-- ================= ⓪ 大白话版：不看公式也能读懂全文 ================= -->
+<section id="s0">
+  <h2><span class="num">⓪</span>先用大白话理解：这篇文章在讲什么？</h2>
+  <div class="card">
+    <!-- TODO: 1-2 段背景：这个东西是什么、为什么重要 -->
+    <!-- 可选三联比喻卡：<div class="analogy"><div><div class="ico">🔍</div><b>概念</b><br>比喻</div>...</div> -->
+    <div class="plain">
+      <!-- TODO: 文章的核心想法，用一个贯穿全文的比喻讲清楚 -->
+    </div>
+    <div class="key">
+      <b>🎯 一句话结论：</b><!-- TODO --><br>
+      <b>📉 实验结果：</b><!-- TODO（若原文无实验则删去本行） -->
+    </div>
+    <p class="note">下面的章节带你一步步看这个结论是怎么来的。每节都有 🧒“通俗地说”，看不懂公式时只看它们和动画也能明白大意。</p>
+  </div>
+</section>
+
+<!-- ================= 正文章节：复制下面的模板，每节一个核心想法 =================
+<section id="s1">
+  <h2><span class="num">①</span>标题：一句话说清这一节</h2>
+  <div class="card">
+    <p>原文公式与说明（LaTeX 逐字保留）</p>
+    $$ ... $$
+    <canvas id="c1" style="height:320px"></canvas>
+    <div class="controls">
+      <button class="primary" id="c1-play">▶ 播放</button>
+      <label>进度 <input type="range" id="c1-t" min="0" max="1" step="0.001" value="0"><span class="val" id="c1-tv"></span></label>
+      <label>$\delta$ <input type="range" id="c1-d" min="-3" max="3" step="0.01" value="1"><span class="val" data-for="c1-d"></span></label>
+      <button id="c1-rand">🎲 随机</button>
+    </div>
+    <div class="legend"><span><i class="sw new"></i>新方法</span><span><i class="sw base"></i>基线</span></div>
+    <div class="readout" id="c1-out"></div>
+    <div class="plain how"><ul><li>颜色/元素各代表什么</li><li>先点什么、拖什么、观察什么</li></ul></div>
+    <div class="plain">这一节在大白话层面的意思 + 比喻</div>
+  </div>
+</section>
+-->
+
+<!-- TODO: 正文章节 -->
+
+<!-- ================= 小结 ================= -->
+<section id="summary">
+  <h2><span class="num">∑</span>小结</h2>
+  <div class="card">
+    <table>
+      <tr><th style="width:22%">步骤</th><th>做了什么</th><th style="width:34%">得到什么</th></tr>
+      <!-- TODO -->
+    </table>
+    <div class="key"><!-- TODO: 全文最重要的洞见 --></div>
+    <div class="plain">
+      <b>用三句话讲给朋友听：</b>
+      <ol><li><!-- TODO --></li><li><!-- TODO --></li><li><!-- TODO --></li></ol>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 术语表 ================= -->
+<section id="gloss">
+  <h2><span class="num">📖</span>术语表</h2>
+  <div class="card">
+    <dl class="gloss">
+      <!-- TODO: <dt>术语</dt><dd>一句话、不用新术语的解释</dd> -->
+    </dl>
+  </div>
+</section>
+</main>
+<footer>可视化解读 · 原文：<a href="{{SOURCE_URL}}" target="_blank">{{SOURCE_URL}}</a> · 页面中的数值均为实时计算 · <a href="../index.html">← 返回目录</a></footer>
+
+<script>
+/* ==== viz-core.js（内联快照，勿手改） ==== */
+{{VIZ_JS}}
+</script>
+<script>
+/* ==== 页面脚本 ==== */
+'use strict';
+const { $, C, fmt } = VIZ;
+
+/* 每个可视化一个块：状态 → draw 函数 → VIZ.onRender(draw) → 绑定控件
+const S1 = { u: 0 };
+const draw1 = VIZ.onRender(() => {
+  const p = VIZ.plot('c1', { x: [0, 1], y: [0, 1] }).axes({ xTicks: 'auto', yTicks: 'auto' });
+  ...
+  VIZ.readout('c1-out', `...`);
+});
+VIZ.player({ button: 'c1-play', range: 'c1-t', label: 'c1-tv', ms: 2500, onUpdate: u => { S1.u = u; draw1(); } });
+VIZ.slider('c1-d', draw1);
+*/
+
+VIZ.start();
+</script>
+</body>
+</html>

@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>uKnowViz · 技术文章可视化解读</title>
+<style>
+/* viz-core.css — uKnowViz 共享样式 v1
+ * 语义配色：颜色代表“角色”而不是装饰，全站一致（见 references/style-guide.md）
+ */
+:root{
+  --bg:#0e1120; --panel:#161a2e; --panel2:#1d2240; --line:#2a3058;
+  --text:#e6e8f2; --muted:#9aa0bf; --dim:#646a8c;
+  --new:#b197fc;     /* 文章提出的新方法 / 主角 */
+  --base:#69db7c;    /* 基线 / 标准做法 / 正确 ✓ */
+  --pa:#f59f4c;      /* 一分为二时的 A 部分（左 / 第一项） */
+  --pb:#4dabf7;      /* 一分为二时的 B 部分（右 / 第二项） */
+  --approx:#ffd43b;  /* 近似值 / 辅助量 / 输入数据 */
+  --warn:#ff8787;    /* 负面结果 / 误差 / 警告 */
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--text);
+  font-family:"PingFang SC","Microsoft YaHei","Noto Sans SC",system-ui,sans-serif;line-height:1.7}
+a{color:var(--pb)}
+b,strong{color:#fff}
+
+/* ---------- 页首 / 导航 / 页脚 ---------- */
+header.hero{padding:56px 24px 32px;text-align:center;
+  background:radial-gradient(ellipse at top,#262d5c 0%,var(--bg) 70%)}
+header.hero h1{font-size:2.2rem;margin:0 0 8px;letter-spacing:.04em}
+header.hero p{color:var(--muted);margin:4px 0}
+header.hero .src{font-size:.85rem}
+nav.toc{position:sticky;top:0;z-index:10;background:rgba(14,17,32,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line);display:flex;gap:4px;justify-content:center;flex-wrap:wrap;padding:8px}
+nav.toc a{color:var(--muted);text-decoration:none;font-size:.88rem;padding:4px 10px;border-radius:6px}
+nav.toc a:hover{background:var(--panel2);color:var(--text)}
+main{max-width:1080px;margin:0 auto;padding:12px 20px 80px}
+footer{color:var(--dim);text-align:center;font-size:.85rem;padding:30px}
+
+/* ---------- 章节 ---------- */
+section{margin:44px 0;scroll-margin-top:56px}
+h2{font-size:1.45rem;border-left:4px solid var(--new);padding-left:12px;margin:0 0 14px}
+h2 .num{color:var(--new);margin-right:8px}
+h3{font-size:1.1rem;margin:10px 0 6px;color:#fff}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px 20px;margin:14px 0}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+@media(max-width:820px){.grid2,.grid3{grid-template-columns:1fr}}
+
+/* ---------- 画布与控件 ---------- */
+canvas{width:100%;display:block;border-radius:10px;background:#11152a}
+canvas.clickable{cursor:pointer}
+.cap{color:var(--muted);font-size:.85rem;text-align:center;margin:2px 0}
+.controls{display:flex;flex-wrap:wrap;gap:10px 18px;align-items:center;margin:12px 0 4px;font-size:.92rem}
+.controls label{display:flex;align-items:center;gap:8px;color:var(--muted)}
+.controls input[type=range]{width:150px;accent-color:var(--new)}
+.controls select{background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:3px 6px}
+button{background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:8px;
+  padding:6px 14px;cursor:pointer;font-size:.9rem;font-family:inherit}
+button:hover{border-color:var(--new)}
+button.primary{background:var(--new);color:#14112a;border:none;font-weight:600}
+.val{font-family:Consolas,Menlo,monospace;color:var(--text);min-width:3.5em;display:inline-block}
+
+/* 图例：<span><i class="sw new"></i>说明</span> */
+.legend{display:flex;flex-wrap:wrap;gap:14px;font-size:.85rem;color:var(--muted);margin-top:8px}
+.legend i{display:inline-block;width:12px;height:12px;border-radius:3px;margin-right:6px;vertical-align:-1px}
+.sw.new{background:var(--new)} .sw.base{background:var(--base)} .sw.pa{background:var(--pa)}
+.sw.pb{background:var(--pb)} .sw.approx{background:var(--approx)} .sw.warn{background:var(--warn)}
+.sw.text{background:var(--text)} .sw.dashed{background:none;border:2px dashed var(--base)}
+
+/* 实时数值读数 */
+.readout{font-family:Consolas,Menlo,monospace;font-size:.88rem;background:#0f1326;border-radius:8px;
+  padding:10px 12px;margin-top:10px;white-space:pre-wrap;color:#cfd3ee;overflow-x:auto}
+.readout b{color:var(--new)}
+.ok{color:var(--base)} .bad{color:var(--warn)}
+
+/* ---------- 文字层 ---------- */
+.note{color:var(--muted);font-size:.92rem}
+.key{background:linear-gradient(90deg,rgba(177,151,252,.14),rgba(77,171,247,.06));
+  border:1px solid rgba(177,151,252,.35);border-radius:12px;padding:12px 16px;margin:12px 0}
+.plain{background:linear-gradient(135deg,rgba(105,219,124,.10),rgba(255,212,59,.06));
+  border:1px solid rgba(105,219,124,.35);border-radius:12px;padding:12px 18px 12px 16px;margin:12px 0;font-size:.97rem}
+.plain::before{content:"🧒 通俗地说";display:block;font-weight:700;color:var(--base);margin-bottom:4px}
+.plain.how::before{content:"👀 怎么看这张图";color:var(--approx)}
+.plain ul,.plain ol{margin:4px 0;padding-left:1.3em}
+.schematic-note{color:var(--muted);font-size:.88rem}
+.schematic-note::before{content:"⚠️ 示意图：";color:var(--warn);font-weight:600}
+
+/* 三联比喻卡 */
+.analogy{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:10px 0}
+@media(max-width:820px){.analogy{grid-template-columns:1fr}}
+.analogy>div{background:var(--panel2);border-radius:10px;padding:12px 14px}
+.analogy .ico{font-size:1.8rem}
+.analogy b{color:var(--new)}
+
+/* 实验卡 */
+.tag{display:inline-block;font-size:.75rem;padding:1px 8px;border-radius:99px;border:1px solid var(--line);color:var(--muted)}
+.stat{font-size:2rem;font-weight:700;color:var(--new)}
+
+/* 表格 / 术语表 */
+table{border-collapse:collapse;width:100%;font-size:.9rem}
+td,th{border-bottom:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+th{color:var(--muted);font-weight:500}
+dl.gloss{display:grid;grid-template-columns:170px 1fr;gap:8px 14px;margin:0}
+dl.gloss dt{color:var(--new);font-weight:600}
+dl.gloss dd{margin:0;color:#cfd3ee}
+@media(max-width:820px){dl.gloss{grid-template-columns:1fr}}
+
+/* 公式分步展开器（VIZ.stepper） */
+.stepper .step{padding:6px 10px;border-left:3px solid transparent;border-radius:6px;margin:4px 0;transition:all .35s}
+.stepper .step.cur{border-left-color:var(--new);background:rgba(177,151,252,.08)}
+.stepper .step.hidden{display:none}
+.stepper .step .why{color:var(--muted);font-size:.9rem;margin-left:4px}
+.katex-display{overflow-x:auto;overflow-y:hidden;padding:4px 0}
+
+/* 运行时错误横幅（VIZ 捕获的 JS 错误，便于自检） */
+#viz-errors{position:fixed;bottom:0;left:0;right:0;background:#5c1a1a;color:#fff;font:12px Consolas,monospace;
+  padding:6px 12px;z-index:99;white-space:pre-wrap;display:none}
+
+/* ---------- 首页索引 ---------- */
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:16px}
+.cards a.item{display:block;text-decoration:none;color:var(--text);background:var(--panel);border:1px solid var(--line);
+  border-radius:14px;padding:16px 18px;transition:border-color .2s,transform .2s}
+.cards a.item:hover{border-color:var(--new);transform:translateY(-2px)}
+.cards .item h3{margin:0 0 6px;color:#fff}
+.cards .item p{margin:0 0 8px;color:var(--muted);font-size:.9rem}
+.cards .item .meta{font-size:.78rem;color:var(--dim)}
+
+</style>
+</head>
+<body>
+<header class="hero">
+  <h1>uKnowViz</h1>
+  <p>把硬核技术文章变成看得懂、玩得动的交互动画</p>
+  <p class="src">共 3 篇</p>
+</header>
+<main>
+<div class="cards">
+  <a class="item" href="adam-to-muon-orthogonal-slowest-descent/index.html">
+    <h3>慢即是快：Adam 的尽头还是 Muon？</h3>
+    <p>对角预条件（Adam/RMSProp）在正交最慢下降下，原有基底被洗掉：更新量的奇异向量退化为梯度的奇异向量，只剩奇异值可调——与 Muon 如出一辙。</p>
+    <div class="meta">苏剑林（科学空间） · 2026-10-20 · 优化器,Adam,Muon,SVD</div>
+  </a>
+  <a class="item" href="continuous-softmax-attention/index.html">
+    <h3>连续化 Softmax Attention</h3>
+    <p>把求和换成积分再算回来：连续化 Softmax Attention ≈ 给注意力分数加了一个 Short Conv 平滑。</p>
+    <div class="meta">苏剑林（科学空间） · 2026-10-20 · Attention,Transformer,连续化</div>
+  </a>
+  <a class="item" href="lm-loss-proper-scoring-rules/index.html">
+    <h3>除了交叉熵，LM Loss 还有什么选择？</h3>
+    <p>能训练 LLM 的损失 = 恰当评分规则：任取一个凹函数，它的切线就是一个损失；交叉熵是唯一只看正确词概率的那个，并与 Softmax 天生配对。</p>
+    <div class="meta">苏剑林（科学空间） · 2026-10-20 · Loss,交叉熵,Softmax,Fenchel-Young</div>
+  </a>
+</div>
+</main>
+<footer>由 article-viz 技能生成 · 本页由 build_index.py 自动生成，请勿手改</footer>
+</body>
+</html>

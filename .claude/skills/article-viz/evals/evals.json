@@ -1,0 +1,35 @@
+{
+  "skill_name": "article-viz",
+  "evals": [
+    {
+      "id": 0,
+      "prompt": "https://kexue.fm/archives/11854",
+      "expected_output": "只给链接（无其他说明）也应触发技能，生成《除了交叉熵，LM Loss还有什么选择？》的交互式科普页：恰当评分规则、凹函数切线几何、评分家族、Softmax 梯度对比、Fenchel-Young/Entmax",
+      "files": []
+    },
+    {
+      "id": 1,
+      "prompt": "https://kexue.fm/archives/11910 先获取这篇文章，分析内容，做成可视化动画解释的 html，要浅显易懂，外行也能看懂",
+      "expected_output": "排序不等式及其推广的交互式科普页：纯数学类文章，考察对不等式/排列的可视化（如配对交换动画）、数值验证与比喻",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "帮我把苏神这篇动量的文章 https://kexue.fm/archives/11875 做成动画演示网页，我想看懂动量到底在干嘛",
+      "expected_output": "动量新理解的交互式科普页：优化器类文章，考察迭代轨迹动画（基线 vs 新理解）、超参滑块、比喻准确性",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "这篇也照样做一个可视化解读：https://kexue.fm/archives/11917 （Shampoo 的尽头是 Muon？）",
+      "expected_output": "Shampoo→Muon 的交互式科普页：矩阵优化器类长文，考察矩阵/谱的可视化（奇异值、正交化）、长推导的分步展开与章节取舍",
+      "files": []
+    },
+    {
+      "id": 4,
+      "prompt": "https://kexue.fm/archives/11964 使用skill",
+      "expected_output": "《慢即是快：2. Adam的尽头还是Muon？》科普页：抽象矩阵优化器文章，考察把正交变换缩到 2×2 旋转角做地形图、驻点处 UᵀΦV 对角化的数值验证、对作者“猜测/信仰”部分的诚实呈现",
+      "files": []
+    }
+  ]
+}
