@@ -1,0 +1,1272 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>除了交叉熵，LM Loss 还有什么选择？ · 可视化解读</title>
+<!-- 首页索引（build_index.py）读取以下 viz:* 元信息 -->
+<meta name="viz:title" content="除了交叉熵，LM Loss 还有什么选择？">
+<meta name="viz:summary" content="能训练 LLM 的损失 = 恰当评分规则：任取一个凹函数，它的切线就是一个损失；交叉熵是唯一只看正确词概率的那个，并与 Softmax 天生配对。">
+<meta name="viz:source" content="https://kexue.fm/archives/11854">
+<meta name="viz:author" content="苏剑林（科学空间）">
+<meta name="viz:date" content="2026-10-20">
+<meta name="viz:tags" content="Loss,交叉熵,Softmax,Fenchel-Young">
+<!-- KaTeX：优先本地 _lib，失败时 viz-core 自动回退 CDN -->
+<link rel="stylesheet" href="../_lib/katex/katex.min.css">
+<script src="../_lib/katex/katex.min.js"></script>
+<script src="../_lib/katex/contrib/auto-render.min.js"></script>
+<style>
+/* ==== viz-core.css（内联快照，勿手改；页面专属样式写在下方） ==== */
+/* viz-core.css — uKnowViz 共享样式 v1
+ * 语义配色：颜色代表“角色”而不是装饰，全站一致（见 references/style-guide.md）
+ */
+:root{
+  --bg:#0e1120; --panel:#161a2e; --panel2:#1d2240; --line:#2a3058;
+  --text:#e6e8f2; --muted:#9aa0bf; --dim:#646a8c;
+  --new:#b197fc;     /* 文章提出的新方法 / 主角 */
+  --base:#69db7c;    /* 基线 / 标准做法 / 正确 ✓ */
+  --pa:#f59f4c;      /* 一分为二时的 A 部分（左 / 第一项） */
+  --pb:#4dabf7;      /* 一分为二时的 B 部分（右 / 第二项） */
+  --approx:#ffd43b;  /* 近似值 / 辅助量 / 输入数据 */
+  --warn:#ff8787;    /* 负面结果 / 误差 / 警告 */
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--text);
+  font-family:"PingFang SC","Microsoft YaHei","Noto Sans SC",system-ui,sans-serif;line-height:1.7}
+a{color:var(--pb)}
+b,strong{color:#fff}
+
+/* ---------- 页首 / 导航 / 页脚 ---------- */
+header.hero{padding:56px 24px 32px;text-align:center;
+  background:radial-gradient(ellipse at top,#262d5c 0%,var(--bg) 70%)}
+header.hero h1{font-size:2.2rem;margin:0 0 8px;letter-spacing:.04em}
+header.hero p{color:var(--muted);margin:4px 0}
+header.hero .src{font-size:.85rem}
+nav.toc{position:sticky;top:0;z-index:10;background:rgba(14,17,32,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line);display:flex;gap:4px;justify-content:center;flex-wrap:wrap;padding:8px}
+nav.toc a{color:var(--muted);text-decoration:none;font-size:.88rem;padding:4px 10px;border-radius:6px}
+nav.toc a:hover{background:var(--panel2);color:var(--text)}
+main{max-width:1080px;margin:0 auto;padding:12px 20px 80px}
+footer{color:var(--dim);text-align:center;font-size:.85rem;padding:30px}
+
+/* ---------- 章节 ---------- */
+section{margin:44px 0;scroll-margin-top:56px}
+h2{font-size:1.45rem;border-left:4px solid var(--new);padding-left:12px;margin:0 0 14px}
+h2 .num{color:var(--new);margin-right:8px}
+h3{font-size:1.1rem;margin:10px 0 6px;color:#fff}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px 20px;margin:14px 0}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+@media(max-width:820px){.grid2,.grid3{grid-template-columns:1fr}}
+
+/* ---------- 画布与控件 ---------- */
+canvas{width:100%;display:block;border-radius:10px;background:#11152a}
+canvas.clickable{cursor:pointer}
+.cap{color:var(--muted);font-size:.85rem;text-align:center;margin:2px 0}
+.controls{display:flex;flex-wrap:wrap;gap:10px 18px;align-items:center;margin:12px 0 4px;font-size:.92rem}
+.controls label{display:flex;align-items:center;gap:8px;color:var(--muted)}
+.controls input[type=range]{width:150px;accent-color:var(--new)}
+.controls select{background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:3px 6px}
+button{background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:8px;
+  padding:6px 14px;cursor:pointer;font-size:.9rem;font-family:inherit}
+button:hover{border-color:var(--new)}
+button.primary{background:var(--new);color:#14112a;border:none;font-weight:600}
+.val{font-family:Consolas,Menlo,monospace;color:var(--text);min-width:3.5em;display:inline-block}
+
+/* 图例：<span><i class="sw new"></i>说明</span> */
+.legend{display:flex;flex-wrap:wrap;gap:14px;font-size:.85rem;color:var(--muted);margin-top:8px}
+.legend i{display:inline-block;width:12px;height:12px;border-radius:3px;margin-right:6px;vertical-align:-1px}
+.sw.new{background:var(--new)} .sw.base{background:var(--base)} .sw.pa{background:var(--pa)}
+.sw.pb{background:var(--pb)} .sw.approx{background:var(--approx)} .sw.warn{background:var(--warn)}
+.sw.text{background:var(--text)} .sw.dashed{background:none;border:2px dashed var(--base)}
+
+/* 实时数值读数 */
+.readout{font-family:Consolas,Menlo,monospace;font-size:.88rem;background:#0f1326;border-radius:8px;
+  padding:10px 12px;margin-top:10px;white-space:pre-wrap;color:#cfd3ee;overflow-x:auto}
+.readout b{color:var(--new)}
+.ok{color:var(--base)} .bad{color:var(--warn)}
+
+/* ---------- 文字层 ---------- */
+.note{color:var(--muted);font-size:.92rem}
+.key{background:linear-gradient(90deg,rgba(177,151,252,.14),rgba(77,171,247,.06));
+  border:1px solid rgba(177,151,252,.35);border-radius:12px;padding:12px 16px;margin:12px 0}
+.plain{background:linear-gradient(135deg,rgba(105,219,124,.10),rgba(255,212,59,.06));
+  border:1px solid rgba(105,219,124,.35);border-radius:12px;padding:12px 18px 12px 16px;margin:12px 0;font-size:.97rem}
+.plain::before{content:"🧒 通俗地说";display:block;font-weight:700;color:var(--base);margin-bottom:4px}
+.plain.how::before{content:"👀 怎么看这张图";color:var(--approx)}
+.plain ul,.plain ol{margin:4px 0;padding-left:1.3em}
+.schematic-note{color:var(--muted);font-size:.88rem}
+.schematic-note::before{content:"⚠️ 示意图：";color:var(--warn);font-weight:600}
+
+/* 三联比喻卡 */
+.analogy{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:10px 0}
+@media(max-width:820px){.analogy{grid-template-columns:1fr}}
+.analogy>div{background:var(--panel2);border-radius:10px;padding:12px 14px}
+.analogy .ico{font-size:1.8rem}
+.analogy b{color:var(--new)}
+
+/* 实验卡 */
+.tag{display:inline-block;font-size:.75rem;padding:1px 8px;border-radius:99px;border:1px solid var(--line);color:var(--muted)}
+.stat{font-size:2rem;font-weight:700;color:var(--new)}
+
+/* 表格 / 术语表 */
+table{border-collapse:collapse;width:100%;font-size:.9rem}
+td,th{border-bottom:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+th{color:var(--muted);font-weight:500}
+dl.gloss{display:grid;grid-template-columns:170px 1fr;gap:8px 14px;margin:0}
+dl.gloss dt{color:var(--new);font-weight:600}
+dl.gloss dd{margin:0;color:#cfd3ee}
+@media(max-width:820px){dl.gloss{grid-template-columns:1fr}}
+
+/* 公式分步展开器（VIZ.stepper） */
+.stepper .step{padding:6px 10px;border-left:3px solid transparent;border-radius:6px;margin:4px 0;transition:all .35s}
+.stepper .step.cur{border-left-color:var(--new);background:rgba(177,151,252,.08)}
+.stepper .step.hidden{display:none}
+.stepper .step .why{color:var(--muted);font-size:.9rem;margin-left:4px}
+.katex-display{overflow-x:auto;overflow-y:hidden;padding:4px 0}
+
+/* 运行时错误横幅（VIZ 捕获的 JS 错误，便于自检） */
+#viz-errors{position:fixed;bottom:0;left:0;right:0;background:#5c1a1a;color:#fff;font:12px Consolas,monospace;
+  padding:6px 12px;z-index:99;white-space:pre-wrap;display:none}
+
+/* ---------- 首页索引 ---------- */
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:16px}
+.cards a.item{display:block;text-decoration:none;color:var(--text);background:var(--panel);border:1px solid var(--line);
+  border-radius:14px;padding:16px 18px;transition:border-color .2s,transform .2s}
+.cards a.item:hover{border-color:var(--new);transform:translateY(-2px)}
+.cards .item h3{margin:0 0 6px;color:#fff}
+.cards .item p{margin:0 0 8px;color:var(--muted);font-size:.9rem}
+.cards .item .meta{font-size:.78rem;color:var(--dim)}
+/* ==== 页面专属样式 ==== */
+</style>
+</head>
+<body>
+<header class="hero">
+  <h1>除了交叉熵，LM Loss 还有什么选择？</h1>
+  <p>交叉熵真的是语言模型唯一的选择吗？如果要换，能换成什么？换了又会怎样？</p>
+  <p class="src">解读自 苏剑林（科学空间）《<a href="https://kexue.fm/archives/11854" target="_blank">除了交叉熵，LM Loss还有什么选择？</a>》</p>
+</header>
+<nav class="toc">
+  <a href="#s0">⓪ 大白话版</a><a href="#s1">① 两个约束</a><a href="#s2">② 恰当性</a><a href="#s3">③ 切线</a>
+  <a href="#s4">④ 评分家族</a><a href="#s5">⑤ 梯度</a><a href="#s6">⑥ 反推激活</a>
+  <a href="#summary">小结</a><a href="#gloss">📖 术语表</a>
+</nav>
+<main>
+
+<!-- ================= ⓪ ================= -->
+<section id="s0">
+  <h2><span class="num">⓪</span>先用大白话理解：这篇文章在讲什么？</h2>
+  <div class="card">
+    <p>大语言模型（LLM）是这样训练的：给它一段文字的开头，让它预测下一个词，再用一个<b>损失函数（Loss）</b>给预测打分，分数越差，模型就改得越多。几乎所有 LLM 用的都是同一个损失：<b>交叉熵</b>。这篇文章问的是：<b>它能换吗？能换成什么？换了会怎样？</b></p>
+    <div class="analogy">
+      <div><div class="ico">🎯</div><b>目标分布 $\boldsymbol{p}$</b><br>“白切”后面真实会出现什么：鸡 50%、鸭 30%、狗 15%、羊 5%。</div>
+      <div><div class="ico">🤖</div><b>预测分布 $\boldsymbol{q}$</b><br>模型猜的概率。它永远看不到完整的 $\boldsymbol{p}$，只能看到一条条样本。</div>
+      <div><div class="ico">📏</div><b>评分 $S(\boldsymbol{q},i)$</b><br>某条样本里真实出现了词 $i$ 时，给模型的罚分。</div>
+    </div>
+    <div class="plain">
+      <p style="margin-top:0">想象你要给一位<b>天气预报员</b>设计考核规则。他每天报“明天下雨的概率”，你每天根据实际天气给他扣分。好的规则要满足两点：</p>
+      <ol>
+        <li><b>能逐天打分</b>：你没法提前知道“真实的下雨概率”，只能看每天下没下雨。（对应：训练语料一条条零散地到来）</li>
+        <li><b>说真话最划算</b>：如果他心里认为是 70%，那报 70% 的长期扣分应该最少。报得夸张或保守都会吃亏。（对应：最优预测 $\boldsymbol{q}$ 就是真实分布 $\boldsymbol{p}$）</li>
+      </ol>
+      <p>满足这两点的规则，统计学里叫<b>“恰当评分规则”</b>。文章证明：这样的规则有无穷多个，每个都能用一个“碗口朝下的函数”（凹函数）画出来，规则就是这个函数的<b>切线</b>。</p>
+    </div>
+    <div class="key">
+      <b>🎯 一句话结论：</b>交叉熵不是唯一选择，平方损失（Brier）、Tsallis、球面、Rényi 评分也都“合法”。但交叉熵有两个独一份的优点：它是<b>唯一只看“正确词概率”</b>的评分；而且配上 Softmax 时梯度最干净（$\boldsymbol{q}-\boldsymbol{e}_i$），即使模型“自信地错了”也能被及时纠正。反过来，换一种评分，就有一个与之配套的“最优激活函数”（例如 Sparsemax）。<br>
+      <b>📉 实验结果：</b>原文没有做实验，给出的是理论分析和一条建议：交叉熵学习效率高，适合做主损失；平方损失更抗噪声，可以在训练后期尝试。
+    </div>
+    <p class="note">下面的章节带你一步步看这个结论是怎么来的。每节都有 🧒“通俗地说”，看不懂公式时只看它们和动画也能明白大意。</p>
+  </div>
+</section>
+
+<!-- ================= ① ================= -->
+<section id="s1">
+  <h2><span class="num">①</span>两个硬约束：能逐条打分，且说真话最划算</h2>
+  <div class="grid2">
+    <div class="card">
+      <p>自然语言是<b>一对多</b>的：“白切”后面可以接“鸡”“鸭”“狗”“羊”。所以模型要学的是<b>整个分布</b>，而不是单个正确答案。</p>
+      <p>难点在于语料是<b>零散</b>送进来的：这次是“白切鸡”，下次是“白切鸭”，我们无法事先统计出完整的频率。因此损失必须能写成<b>对样本取平均</b>的形式，也就是关于 $\boldsymbol{p}$ 线性：</p>
+      $$L(\boldsymbol{p}, \boldsymbol{q}) = \sum_{i=1}^n p_i S(\boldsymbol{q}, i) = \mathbb{E}_{i\sim\boldsymbol{p}}[S(\boldsymbol{q}, i)]\qquad\text{s.t.}\qquad \boldsymbol{p} = \mathop{\text{argmin}}_{\boldsymbol{q}\in\Delta^{n-1}} L(\boldsymbol{p}, \boldsymbol{q})$$
+      <p>$\text{s.t.}$ 后面的条件是损失函数的基本要求：固定 $\boldsymbol{p}$ 时，最小值点是 $\boldsymbol{q}^*=\boldsymbol{p}$。</p>
+    </div>
+    <div class="card">
+      <p>线性约束排除了很多常见的概率距离，比如 Total Variation：</p>
+      $$TV(\boldsymbol{p}, \boldsymbol{q}) = \sum_{i=1}^n |p_i - q_i| = \mathbb{E}_{i\sim \boldsymbol{p}}\left[\left|1 - \frac{q_i}{p_i}\right|\right]$$
+      <p>它看起来也是“对样本取平均”，但每条样本的罚分 $|1 - q_i/p_i|$ 里含有 $p_i$，而 $p_i$ 恰恰是我们<b>无法预知</b>的。所以 TV 无法改造成 LLM 的训练损失。</p>
+      <p class="note">交叉熵的逐条罚分是 $S(\boldsymbol{q},i)=-\log q_i$，只用到模型自己的输出，所以可以边读语料边打分。</p>
+    </div>
+  </div>
+  <div class="card">
+    <canvas id="c1" style="height:330px"></canvas>
+    <div class="controls">
+      <button class="primary" id="c1-play">▶ 播放：语料一条条到来</button>
+      <label>进度 <input type="range" id="c1-t" min="0" max="1" step="0.001" value="0.35"><span class="val" id="c1-tv">35%</span></label>
+      <label>模型猜测 $\boldsymbol{q}$ 接近 $\boldsymbol{p}$ 的程度 <input type="range" id="c1-beta" min="0" max="1" step="0.01" value="0.4"><span class="val" data-for="c1-beta"></span></label>
+      <button id="c1-rand">🎲 重新采样</button>
+    </div>
+    <div class="legend">
+      <span><i class="sw base"></i>真实分布 $\boldsymbol{p}$（模型看不到）</span>
+      <span><i class="sw new"></i>模型预测 $\boldsymbol{q}$</span>
+      <span><i class="sw approx"></i>逐条罚分 $-\log q_i$ 的累计平均</span>
+      <span><i class="sw text"></i>精确期望 $L(\boldsymbol{p},\boldsymbol{q})$（虚线）</span>
+    </div>
+    <div class="readout" id="c1-out"></div>
+    <div class="plain how">
+      <ul>
+        <li><b>左边</b>：绿色柱是真实分布 $\boldsymbol{p}$，紫色柱是模型的猜测 $\boldsymbol{q}$。拖动“接近程度”滑块，可以让模型从“瞎猜（均匀分布）”变成“猜准（$\boldsymbol{q}=\boldsymbol{p}$）”。</li>
+        <li><b>右边</b>：点 <b>▶ 播放</b>，语料一条条到来（顶部滚动显示“白切鸡”“白切鸭”……）。每来一条，只按<b>这一条</b>里出现的词计算罚分 $-\log q_i$。</li>
+        <li>黄色线是这些罚分的累计平均。样本越多，它越贴近白色虚线，也就是用完整 $\boldsymbol{p}$ 算出的精确期望损失。</li>
+      </ul>
+    </div>
+    <div class="plain">
+      训练时我们<b>永远拿不到</b>那根绿色的柱子，只能看到一条条“白切鸡”“白切鸭”。交叉熵的好处是：每条样本单独打分就行，平均下来自动等于“如果知道真实分布时该算的那个值”。
+      TV 就不行：它每条样本的罚分都要用到 $p_i$，相当于给预报员打分时，得先知道“明天真实的下雨概率”，可这正是我们不知道的东西。
+    </div>
+  </div>
+</section>
+
+<!-- ================= ② ================= -->
+<section id="s2">
+  <h2><span class="num">②</span>能逐条打分还不够：最低点必须正好在 $\boldsymbol{q}=\boldsymbol{p}$</h2>
+  <div class="card">
+    <p>为了能画在平面上，这里只考虑两个词：“鸡”和“鸭”。设真实分布中“鸡”的概率为 $p$，模型预测为 $q$。下面三种逐条罚分都满足“能逐条打分”，但只有前两种满足“说真话最划算”：</p>
+    <table>
+      <tr><th>逐条罚分 $S(\boldsymbol{q},i)$</th><th>期望损失 $L(p,q)$</th><th>最低点</th></tr>
+      <tr><td>交叉熵 $-\log q_i$</td><td>$-p\log q-(1-p)\log(1-q)$</td><td class="ok">$q=p$ ✓</td></tr>
+      <tr><td>Brier $\|\boldsymbol{q}-\boldsymbol{e}_i\|^2$</td><td>$2p(1-q)^2+2(1-p)q^2$</td><td class="ok">$q=p$ ✓</td></tr>
+      <tr><td>线性打分 $1-q_i$（“猜中的概率”）</td><td>$1-pq-(1-p)(1-q)$</td><td class="bad">跑到 $0$ 或 $1$ ✗</td></tr>
+    </table>
+    <canvas id="c2" style="height:320px;margin-top:12px"></canvas>
+    <div class="controls">
+      <label>真实分布中“鸡”的概率 $p$ <input type="range" id="c2-p" min="0.02" max="0.98" step="0.01" value="0.7"><span class="val" data-for="c2-p"></span></label>
+    </div>
+    <div class="legend">
+      <span><i class="sw base"></i>交叉熵</span><span><i class="sw pb"></i>Brier（平方损失）</span><span><i class="sw warn"></i>线性打分（不恰当）</span>
+      <span><i class="sw text"></i>竖虚线：$q=p$</span>
+    </div>
+    <div class="readout" id="c2-out"></div>
+    <div class="plain how">
+      <ul>
+        <li>横轴是模型报出的 $q$，纵轴是长期平均罚分 $L(p,q)$。每条曲线上的大圆点是它的<b>最低点</b>，也就是让罚分最少的报法。</li>
+        <li>拖动 $p$：绿色和蓝色的最低点<b>始终跟着竖虚线走</b>；红色的最低点则一直贴在最左或最右边。</li>
+      </ul>
+    </div>
+    <div class="plain">
+      红色那条规则是“按你给正确答案的概率给分”，听起来很合理。但在这种规则下，预报员只要心里觉得下雨概率超过一半，就会直接报 100%，因为这样平均得分最高。也就是说，它<b>鼓励夸大</b>，而不是说真话。
+      LLM 如果用这种损失训练，只会学会押宝最常见的那个词，学不到“鸡 50%、鸭 30%……”这样的完整分布。
+    </div>
+  </div>
+</section>
+
+<!-- ================= ③ ================= -->
+<section id="s3">
+  <h2><span class="num">③</span>几何核心：每个合法损失，都是某个凹函数的切线</h2>
+  <div class="grid2">
+    <div class="card">
+      <p>固定 $\boldsymbol{p}$ 时，$L(\boldsymbol{p}, \boldsymbol{q})$ 的最小值是 $H(\boldsymbol{p})\triangleq L(\boldsymbol{p}, \boldsymbol{p})$，于是</p>
+      $$L(\boldsymbol{p}, \boldsymbol{q})\geq H(\boldsymbol{p})$$
+      <p>换个角度，把注意力放在 $\boldsymbol{p}$ 上：固定 $\boldsymbol{q}$ 时，左边关于 $\boldsymbol{p}$ 是线性的（一个<b>超平面</b>），右边是一个<b>超曲面</b>，两者在 $\boldsymbol{p}=\boldsymbol{q}$ 处相交。如果要求最小值点唯一，那么相交就是<b>相切</b>。</p>
+      <p>不等式对所有 $\boldsymbol{p}$ 恒成立，等价于 $H$ 总在它的切平面下方，这正是<b>凹函数</b>的定义。</p>
+    </div>
+    <div class="card">
+      <p>反过来，任取凹函数 $H$，它在 $\boldsymbol{q}$ 处的切平面为</p>
+      $$H(\boldsymbol{q}) + (\boldsymbol{p}-\boldsymbol{q})\cdot\nabla_{\boldsymbol{q}} H(\boldsymbol{q}) = \boldsymbol{p}\cdot\big[H(\boldsymbol{q}) + \nabla_{\boldsymbol{q}} H(\boldsymbol{q}) - \boldsymbol{q}\cdot\nabla_{\boldsymbol{q}} H(\boldsymbol{q})\big]$$
+      <p>由此直接读出评分函数的一般形式：</p>
+      $$\begin{aligned}S(\boldsymbol{q},i) =&\, H(\boldsymbol{q}) + \partial_i H(\boldsymbol{q}) - \boldsymbol{q}\cdot\nabla_{\boldsymbol{q}} H(\boldsymbol{q}) \\ =&\, H(\boldsymbol{q}) + (\boldsymbol{e}_i - \boldsymbol{q})\cdot\nabla_{\boldsymbol{q}} H(\boldsymbol{q})\end{aligned}$$
+      <p class="note">允许再加减一个常数，或乘一个正常数。两个凹函数的线性插值仍是凹函数，所以两个评分函数的线性插值也还是评分函数。</p>
+    </div>
+  </div>
+  <div class="card">
+    <canvas id="c3" style="height:380px"></canvas>
+    <div class="controls">
+      <button class="primary" id="c3-play">▶ 播放：让切线沿曲线滚一圈</button>
+      <label>预测 $q$ <input type="range" id="c3-q" min="0.02" max="0.98" step="0.001" value="0.3"><span class="val" id="c3-qv"></span></label>
+      <label>真实 $p$ <input type="range" id="c3-p" min="0" max="1" step="0.01" value="0.75"><span class="val" data-for="c3-p"></span></label>
+    </div>
+    <div class="controls">
+      <label>评分族 <select id="c3-fam"><option value="log">对数（交叉熵）</option><option value="brier">Brier（平方）</option><option value="tsallis">Tsallis</option><option value="sph">球面</option><option value="renyi">Rényi</option></select></label>
+      <label>$\alpha$ <input type="range" id="c3-a" min="0.2" max="3" step="0.01" value="1.5"><span class="val" data-for="c3-a"></span></label>
+      <span class="note" id="c3-anote"></span>
+    </div>
+    <div class="legend">
+      <span><i class="sw base"></i>凹函数 $H(p)$</span>
+      <span><i class="sw new"></i>在 $q$ 处的切线 $=L(p,q)$</span>
+      <span><i class="sw pa"></i>切线左端高度 $=S(\boldsymbol{q},\text{鸭})$</span>
+      <span><i class="sw pb"></i>切线右端高度 $=S(\boldsymbol{q},\text{鸡})$</span>
+      <span><i class="sw warn"></i>缝隙 $L(p,q)-H(p)\ge 0$</span>
+    </div>
+    <div class="readout" id="c3-out"></div>
+    <div class="plain how">
+      <ul>
+        <li>横轴是“鸡”的概率，最左端代表“一定是鸭”，最右端代表“一定是鸡”。绿色曲线是凹函数 $H$。</li>
+        <li>紫色直线是 $H$ 在模型预测 $q$ 处的<b>切线</b>。它的<b>右端高度</b>（蓝点）就是“真实出现鸡”时的罚分，<b>左端高度</b>（橙点）就是“真实出现鸭”时的罚分。</li>
+        <li>拖动 $p$：红色竖线是长期平均罚分（切线高度）比最优值（曲线高度）多出来的部分。它永远 ≥ 0，只有 $p=q$ 时为 0。</li>
+        <li>点 <b>▶ 播放</b>：切线沿曲线滚动并留下淡淡的轨迹，这些直线的“外轮廓”拼出的正是 $H$ 本身。</li>
+      </ul>
+    </div>
+    <div class="plain">
+      这是全文最漂亮的一步。<b>只要画一个碗口朝下的曲线 $H$，就能得到一个合法的损失函数：</b>模型报出 $q$，你就在曲线上 $q$ 处做一条切线，切线在两头的高度，就是两种结果各自的罚分。
+      <ul>
+        <li>为什么“说真话最划算”？因为曲线是凹的，任何切线都在曲线上方。只有在 $q=p$ 那一点，切线才碰到曲线，平均罚分才最小。</li>
+        <li>红色缝隙就是“说假话的代价”。对交叉熵来说，它正好是著名的 KL 散度。</li>
+      </ul>
+      换一个形状的碗，就换了一种损失，这就是“交叉熵还有什么选择”的完整答案。
+    </div>
+  </div>
+</section>
+
+<!-- ================= ④ ================= -->
+<section id="s4">
+  <h2><span class="num">④</span>评分家族：都是交叉熵的推广，但只有交叉熵“只看正确词”</h2>
+  <div class="card">
+    <p>上面的结果有个专门的名字，叫<b>恰当评分规则（Proper Scoring Rules）</b>。几个经典例子：</p>
+    <table>
+      <tr><th>名称</th><th>$H(\boldsymbol{p})$</th><th>$S(\boldsymbol{q},i)$</th></tr>
+      <tr><td>对数评分（交叉熵）</td><td>$-\sum_i p_i\log p_i$</td><td>$-\log q_i$</td></tr>
+      <tr><td>Brier 评分（平方损失）</td><td>$1-\sum_i p_i^2$</td><td>$\|\boldsymbol{q}-\boldsymbol{e}_i\|^2$</td></tr>
+      <tr><td>Tsallis 评分 $(\alpha > 0)$</td><td>$\frac{1-\sum_i p_i^\alpha}{\alpha-1}$</td><td>$\sum_j q_j^\alpha - \frac{\alpha}{\alpha-1}q_i^{\alpha-1} + \frac{1}{\alpha-1}$</td></tr>
+      <tr><td>球面评分 $(\alpha > 0)$</td><td>$\frac{1-\Vert\boldsymbol{p}\Vert_\alpha}{\alpha-1}$</td><td>$\frac{1}{\alpha-1}\left(1 -\frac{q_i^{\alpha-1}}{\Vert\boldsymbol{q}\Vert_\alpha^{\alpha-1}}\right)$</td></tr>
+      <tr><td>Rényi 评分 $(0 < \alpha < 1)$</td><td>$\frac{1}{1-\alpha}\log\sum_i p_i^\alpha$</td><td>$\frac{1}{1-\alpha}\left(\log\sum_j q_j^\alpha+\alpha \frac{q_i^{\alpha-1}}{\sum_j q_j^\alpha}-\alpha\right)$</td></tr>
+    </table>
+    <p>后三个评分在 $\alpha\to 1$ 时都退化成对数评分，所以它们都是交叉熵的某种推广（Brier 就是 Tsallis 取 $\alpha=2$）。</p>
+  </div>
+  <div class="grid2">
+    <div class="card">
+      <h3>α → 1：所有家族都收敛到交叉熵</h3>
+      <canvas id="c4a" style="height:300px"></canvas>
+      <div class="controls">
+        <label>$\alpha$ <input type="range" id="c4-a" min="0.3" max="3" step="0.01" value="2"><span class="val" data-for="c4-a"></span></label>
+        <button id="c4-one">令 $\alpha\to 1$</button>
+      </div>
+      <div class="legend">
+        <span><i class="sw base"></i>$-\log q$</span><span><i class="sw pa"></i>Tsallis</span><span><i class="sw" style="background:var(--muted)"></i>球面</span><span><i class="sw approx"></i>Rényi（仅 $\alpha<1$）</span>
+      </div>
+      <div class="readout" id="c4a-out"></div>
+    </div>
+    <div class="card">
+      <h3>只看 $q_i$ 吗？改变“其余概率怎么分”</h3>
+      <canvas id="c4b" style="height:300px"></canvas>
+      <div class="controls">
+        <label>正确词概率 $q_i$ <input type="range" id="c4-qi" min="0.05" max="0.9" step="0.01" value="0.3"><span class="val" data-for="c4-qi"></span></label>
+        <label>其余概率的分法 <input type="range" id="c4-r" min="0" max="1" step="0.01" value="0.5"><span class="val" data-for="c4-r"></span></label>
+      </div>
+      <div class="legend"><span><i class="sw text"></i>柱：当前罚分</span><span><i class="sw warn"></i>竖线：拖动“分法”时罚分的变化范围</span></div>
+      <div class="readout" id="c4b-out"></div>
+    </div>
+  </div>
+  <div class="card">
+    <p>特别地，如果要求 $S(\boldsymbol{q},i)$ <b>只依赖于</b> $q_i$，那么只有交叉熵这一个选择。证明（逐步展开）：</p>
+    <div id="st4" class="card" style="background:var(--panel2)"></div>
+    <p class="note">原文附注：由于约束 $\sum_i q_i = 1$，“只依赖于 $q_i$”本身并不那么朴素。比如 $S(q_n) = S(1 - q_1 - \cdots - q_{n-1})$，我们不能简单地说 $S(q_n)$ 只依赖于 $q_n$。相对严谨的做法是：用 $q_n$ 消元，只保留 $n-1$ 个独立变量。此时前 $n-1$ 个 $q_i S'(q_i)$ 都等于同一个式子，而每个 $q_i S'(q_i)$ 至多依赖于 $q_i$，所以这个式子只能是常数。</p>
+    <div class="plain how">
+      <ul>
+        <li><b>左图</b>：横轴是模型给正确词的概率 $q$（两词情形），纵轴是罚分。拖动 $\alpha$ 靠近 1，三条彩色曲线会逐渐贴到绿色的 $-\log q$ 上。注意 $\alpha>1$ 时，$q\to 0$ 处的罚分是<b>有限的</b>，而交叉熵趋于无穷大。</li>
+        <li><b>右图</b>：三个词，正确词的概率固定为 $q_i$，其余概率分给另外两个词。拖动“分法”滑块，只有绿色柱（交叉熵）纹丝不动，其他评分都会变，红色竖线标出了它们的变化范围。</li>
+      </ul>
+    </div>
+    <div class="plain">
+      这些评分就像一个“家族”，$\alpha$ 是调节旋钮，旋到 1 就回到交叉熵。不同之处在于对待<b>“彻底猜错”</b>的态度：交叉熵对“给正确答案 0 概率”罚无穷大分，非常严厉；$\alpha>1$ 的评分罚分有上限，对离谱的样本更宽容。这正是后面说的“抗噪声”的来源。
+      <br>右图说明交叉熵的另一个独特之处：它<b>只关心“正确答案你给了多少概率”</b>，至于剩下的概率怎么分给错误答案，它一概不管。数学上可以证明，满足这一点的恰当评分只有交叉熵一个。
+    </div>
+  </div>
+</section>
+
+<!-- ================= ⑤ ================= -->
+<section id="s5">
+  <h2><span class="num">⑤</span>Softmax 下的梯度：交叉熵不怕“自信地错误”</h2>
+  <div class="card">
+    <p>模型实际输出的是无界的 Logits $\boldsymbol{z}\in\mathbb{R}^n$，再经 Softmax 变成概率 $\boldsymbol{q}$。我们只能用基于梯度的优化器，所以损失关于 $\boldsymbol{z}$ 的梯度和凸性尤其重要：</p>
+    $$\begin{aligned}\text{对数评分 (交叉熵)：}&\qquad \nabla_{\boldsymbol{z}} S(\boldsymbol{q}, i) = \boldsymbol{q} - \boldsymbol{e}_i \\ \text{Brier评分 (平方损失)：}&\qquad \nabla_{\boldsymbol{z}} S(\boldsymbol{q}, i) = 2(\mathop{\text{diag}}(\boldsymbol{q})-\boldsymbol{q}\boldsymbol{q}^\top)(\boldsymbol{q}-\boldsymbol{e}_i)\end{aligned}$$
+    <p>交叉熵的梯度当且仅当 $\boldsymbol{q}=\boldsymbol{e}_i$ 时为零，离目标越远梯度越大。平方损失多了一项 $\mathop{\text{diag}}(\boldsymbol{q})-\boldsymbol{q}\boldsymbol{q}^\top$，当 $\boldsymbol{q}=\boldsymbol{e}_j\neq \boldsymbol{e}_i$ 时它也为零，也就是模型<b>“自信地错误”</b>时梯度消失。</p>
+    <p class="note">下面仍用两词情形：正确词是“鸡”，记 margin $m = z_\text{鸡}-z_\text{鸭}$，则 $q_\text{鸡}=\sigma(m)$。$m$ 很负，就表示模型很自信地认为是“鸭”。</p>
+  </div>
+  <div class="grid2">
+    <div class="card">
+      <h3>损失与梯度随 margin 的变化</h3>
+      <canvas id="c5a" style="height:380px"></canvas>
+      <div class="controls">
+        <label>margin $m$ <input type="range" id="c5-m" min="-8" max="8" step="0.05" value="-4"><span class="val" data-for="c5-m"></span></label>
+      </div>
+      <div class="legend"><span><i class="sw base"></i>交叉熵</span><span><i class="sw pb"></i>平方损失</span></div>
+      <div class="readout" id="c5a-out"></div>
+    </div>
+    <div class="card">
+      <h3>从“自信地错误”出发做梯度下降</h3>
+      <canvas id="c5b" style="height:380px"></canvas>
+      <div class="controls">
+        <button class="primary" id="c5-play">▶ 播放训练</button>
+        <label>步数 <input type="range" id="c5-t" min="0" max="1" step="0.001" value="1"><span class="val" id="c5-tv">100%</span></label>
+      </div>
+      <div class="controls">
+        <label>初始 $m_0$ <input type="range" id="c5-m0" min="-10" max="0" step="0.1" value="-6"><span class="val" data-for="c5-m0"></span></label>
+        <label>学习率 $\eta$ <input type="range" id="c5-lr" min="0.1" max="3" step="0.05" value="1"><span class="val" data-for="c5-lr"></span></label>
+      </div>
+      <div class="legend"><span><i class="sw base"></i>交叉熵</span><span><i class="sw pb"></i>平方损失</span></div>
+      <div class="readout" id="c5b-out"></div>
+    </div>
+  </div>
+  <div class="card">
+    <p>这也可以用凸性来理解：在 Softmax 激活下，交叉熵关于 $\boldsymbol{z}$ 是<b>凸</b>的，最优点唯一，任意处的梯度都指向目标；平方损失关于 $\boldsymbol{z}$ 是<b>非凸</b>的，这些好性质都不保证存在，模型可能陷入“既错误又走不出去”的饱和困境。（当然，深度模型对参数本来就非凸。要求对 $\boldsymbol{z}$ 凸，更多是为了不在最后一层额外“添乱”。）</p>
+    <div class="plain how">
+      <ul>
+        <li><b>左图上半</b>是两种损失随 $m$ 的变化，<b>下半</b>是梯度大小。把 $m$ 拖到很负（自信地错误）：绿色的梯度接近 1，蓝色的梯度几乎为 0。</li>
+        <li><b>右图</b>：直接把 logits 当参数做梯度下降，纵轴是模型给正确词的概率。点 <b>▶ 播放</b>：绿色很快爬到接近 1，蓝色在底部趴很久。把 $m_0$ 调到 −2 左右再试，两者的差距会小得多。</li>
+      </ul>
+    </div>
+    <div class="plain">
+      想象两位老师批改作业。交叉熵老师：错得越离谱，批得越狠，学生立刻知道要改。平方损失老师：学生只要错得“理直气壮”，他就几乎不批了。
+      <ul>
+        <li><b>训练前中期</b>，模型大部分预测都不准，平方损失老师经常“放过”，学习效率很低。</li>
+        <li><b>训练后期</b>，模型已经基本稳定，还在“自信地错误”的样本可能是极难的或者标注错误的。这时平方损失老师的“放过”反而是好事，可以少受脏数据干扰。</li>
+      </ul>
+      所以原文的建议是：<b>交叉熵做主损失；平方损失更抗噪声，后期可以尝试。</b>（这是理论分析，原文没有给出实验数据。）
+    </div>
+  </div>
+</section>
+
+<!-- ================= ⑥ ================= -->
+<section id="s6">
+  <h2><span class="num">⑥</span>反推：给定一种评分，它的“最优激活函数”是什么？</h2>
+  <div class="grid2">
+    <div class="card">
+      <p>“Softmax + 交叉熵”最实用的优点是梯度干净：$\nabla_{\boldsymbol{z}} S = \boldsymbol{q} - \boldsymbol{e}_i$。反过来，对给定的 $S$，寻找变换 $\boldsymbol{q} = \sigma(\boldsymbol{z})\in\Delta^{n-1}$，使得</p>
+      $$\nabla_{\boldsymbol{z}} S(\boldsymbol{q}, i) = \boldsymbol{q} - \boldsymbol{e}_i$$
+      <div id="st6" class="card" style="background:var(--panel2)"></div>
+      <p>这正是凸函数 $-H(\boldsymbol{p})$ 的<b>凸共轭</b>。这几节内容合起来，就是经典的 <b>Fenchel-Young Losses</b> 框架。</p>
+    </div>
+    <div class="card">
+      <p>Tsallis、球面、Rényi 的 $H$ 都形如 $g(\sum_i q_i^{\alpha})$。引入拉格朗日乘子，对 $q_i$ 求导并令其为 0：</p>
+      $$z_i + \alpha g'(t) q_i^{\alpha-1} = \lambda \qquad\Rightarrow\qquad q_i^{\alpha-1} = \frac{\lambda - z_i}{\alpha g'(t)}$$
+      $$q_i = \left\{\begin{aligned} &\, e^{z_i - \lambda},&\, \alpha \to 1 \\ &\,\left[\frac{z_i - \lambda}{-\alpha g'(t)}\right]_+^{\frac{1}{\alpha-1}},&\, \alpha \neq 1 \end{aligned}\right.$$
+      <p>$\alpha\to 1$ 时就是 Softmax。对 Tsallis 评分，$g'(t)=1/(1-\alpha)$，于是</p>
+      $$q_i = \left[\frac{\alpha-1}{\alpha}(z_i - \lambda)\right]_+^{\frac{1}{\alpha-1}}$$
+      <p>其中 $\lambda$ 由 $\sum_i q_i = 1$ 用二分法求出。$\alpha=2$ 时就是 <b>Sparsemax</b>，其余情况称为 <b>Entmax-$\alpha$</b>。$\alpha>1$ 对应稀疏分布（会出现精确的 0），$\alpha<1$ 对应稠密分布。</p>
+    </div>
+  </div>
+  <div class="card">
+    <canvas id="c6a" style="height:320px"></canvas>
+    <div class="controls">
+      <label>Logit 差 $\Delta z = z_\text{鸡}-z_\text{鸭}$ <input type="range" id="c6-dz" min="-3" max="3" step="0.01" value="0.6"><span class="val" data-for="c6-dz"></span></label>
+      <label>Tsallis $\alpha$ <input type="range" id="c6-a" min="0.5" max="3" step="0.01" value="2"><span class="val" data-for="c6-a"></span></label>
+      <button id="c6-soft">$\alpha=1$（Softmax）</button><button id="c6-sparse">$\alpha=2$（Sparsemax）</button>
+    </div>
+    <canvas id="c6b" style="height:260px;margin-top:10px"></canvas>
+    <div class="controls"><button id="c6-rand">🎲 随机 logits</button></div>
+    <div class="legend">
+      <span><i class="sw new"></i>Entmax-$\alpha$（当前 $\alpha$）</span>
+      <span><i class="sw dashed"></i>Softmax（$\alpha=1$）</span>
+      <span><i class="sw approx"></i>目标函数 $p\,z_\text{鸡}+(1-p)\,z_\text{鸭}+H(p)$</span>
+    </div>
+    <div class="readout" id="c6-out"></div>
+    <div class="plain how">
+      <ul>
+        <li><b>上图左</b>：黄色曲线是要最大化的目标 $\boldsymbol{p}\cdot\boldsymbol{z}+H(\boldsymbol{p})$，它的最高点（紫色竖线）就是激活函数输出的 $q_\text{鸡}$。</li>
+        <li><b>上图右</b>：把 $\Delta z$ 从 −3 拖到 3，$q_\text{鸡}$ 的变化曲线。绿色虚线是 Softmax（S 形，永远到不了 0 和 1）；$\alpha=2$ 时紫色变成一段折线，$\Delta z$ 超过 2 后 $q_\text{鸡}$ <b>精确等于 1</b>。</li>
+        <li><b>下图</b>：“白切”后面四个候选词的分布。把 $\alpha$ 从 1 拖到 2 以上，排在后面的词的概率会<b>变成精确的 0</b>（标有“=0”）。</li>
+      </ul>
+    </div>
+    <div class="plain">
+      Softmax 和交叉熵总是成对出现，并不是巧合：<b>交叉熵的“最佳搭档”激活函数正好就是 Softmax。</b>同样，每一种评分都有自己的最佳搭档，搭配之后梯度都是干净的 $\boldsymbol{q}-\boldsymbol{e}_i$。
+      Tsallis 评分（$\alpha=2$ 即平方损失）的搭档 Sparsemax 有一个有趣的性质：它敢于说“这个词<b>绝对不可能</b>”，直接给 0 概率；而 Softmax 无论如何都会留一点点概率。
+      这就像一个是“绝不把话说死”的谨慎专家，另一个是“明确排除不可能选项”的果断专家。
+    </div>
+  </div>
+</section>
+
+<!-- ================= 小结 ================= -->
+<section id="summary">
+  <h2><span class="num">∑</span>小结</h2>
+  <div class="card">
+    <table>
+      <tr><th style="width:22%">步骤</th><th>做了什么</th><th style="width:36%">得到什么</th></tr>
+      <tr><td>① 两个约束</td><td>语料零散到来 + 要学完整分布</td><td>损失须为 $\mathbb{E}_{i\sim\boldsymbol{p}}[S(\boldsymbol{q},i)]$，且最小值在 $\boldsymbol{q}=\boldsymbol{p}$；TV 被排除</td></tr>
+      <tr><td>② 恰当性</td><td>比较可采样的几种罚分</td><td>可采样 ≠ 恰当（线性打分鼓励夸大）</td></tr>
+      <tr><td>③ 切线</td><td>$L\ge H$ + 线性 + 唯一最小值</td><td>$H$ 凹，$S(\boldsymbol{q},i) = H(\boldsymbol{q}) + (\boldsymbol{e}_i - \boldsymbol{q})\cdot\nabla H(\boldsymbol{q})$</td></tr>
+      <tr><td>④ 评分家族</td><td>代入不同的凹函数</td><td>Brier / Tsallis / 球面 / Rényi；只看 $q_i$ 的只有交叉熵</td></tr>
+      <tr><td>⑤ 梯度</td><td>Softmax 下求梯度与凸性</td><td>交叉熵梯度 $\boldsymbol{q}-\boldsymbol{e}_i$ 且凸；平方损失在“自信地错误”时梯度消失</td></tr>
+      <tr><td>⑥ 反推激活</td><td>要求 $\nabla_{\boldsymbol{z}}S=\boldsymbol{q}-\boldsymbol{e}_i$</td><td>Fenchel-Young：交叉熵 ↔ Softmax，Tsallis ↔ Entmax / Sparsemax</td></tr>
+    </table>
+    <div class="key">LM Loss 的全部合法选择 = 凹函数的切线（恰当评分规则）。交叉熵的特殊地位来自两点：它是<b>唯一只看正确词概率</b>的恰当评分；它与 Softmax 是 Fenchel-Young 意义下的<b>天生一对</b>，梯度干净且对 logits 凸。这解释了为什么两者几乎总是配套出现。</div>
+    <div class="plain">
+      <b>用三句话讲给朋友听：</b>
+      <ol>
+        <li>训练大模型时，要给“预测下一个词”打分，这个打分规则必须能一条条样本地算，而且要让“如实报告概率”成为最优策略。</li>
+        <li>满足这两点的规则有无穷多个：随便画一个碗口朝下的曲线，它的切线就是一个规则。交叉熵只是其中一个，但它是唯一只看“正确答案给了多少概率”的那个。</li>
+        <li>交叉熵配 Softmax 时，错得越离谱改得越快，所以最适合做主力；平方损失对离谱样本更宽容，也许能在训练后期抵御脏数据。</li>
+      </ol>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 术语表 ================= -->
+<section id="gloss">
+  <h2><span class="num">📖</span>术语表</h2>
+  <div class="card">
+    <dl class="gloss">
+      <dt>损失函数 Loss</dt><dd>给模型的预测打的“罚分”，训练就是不断调整模型，让罚分变小。</dd>
+      <dt>交叉熵 Cross Entropy</dt><dd>最常用的损失：真实出现词 $i$ 时罚 $-\log q_i$。给正确答案的概率越小，罚得越重。</dd>
+      <dt>目标分布 / 预测分布</dt><dd>$\boldsymbol{p}$：真实世界里下一个词的概率；$\boldsymbol{q}$：模型猜的概率。</dd>
+      <dt>概率单纯形 $\Delta^{n-1}$</dt><dd>所有“$n$ 个非负数、加起来等于 1”的向量组成的集合，也就是所有可能的概率分布。</dd>
+      <dt>恰当评分规则</dt><dd>能逐条样本计算、并且“如实报告概率”时长期平均罚分最小的打分规则。</dd>
+      <dt>凹函数</dt><dd>碗口朝下的函数：曲线总在它任意一条切线的下方。</dd>
+      <dt>切线 / 切平面</dt><dd>在某一点刚好“贴着”曲线（曲面）的直线（平面）。</dd>
+      <dt>Bregman 散度 / KL 散度</dt><dd>切线比曲线高出的那段缝隙，衡量“说假话的代价”；对交叉熵而言就是 KL 散度。</dd>
+      <dt>Brier 评分</dt><dd>平方损失：预测分布与 one-hot 正确答案之间的距离平方。</dd>
+      <dt>Tsallis / 球面 / Rényi 评分</dt><dd>带一个旋钮 $\alpha$ 的评分家族，$\alpha\to1$ 时都变回交叉熵。</dd>
+      <dt>One Hot 向量 $\boldsymbol{e}_i$</dt><dd>只有第 $i$ 位是 1、其余全是 0 的向量，代表“正确答案就是 $i$”。</dd>
+      <dt>Logits $\boldsymbol{z}$</dt><dd>模型最后一层输出的原始分数，可正可负、没有上下界，还不是概率。</dd>
+      <dt>Softmax</dt><dd>把 logits 变成概率的函数：先取指数，再除以总和。</dd>
+      <dt>凸性</dt><dd>碗口朝上：只有一个最低点，从任何地方顺着梯度往下走都能到达。</dd>
+      <dt>梯度消失</dt><dd>梯度接近 0，模型“不知道该往哪改”，学习停滞。</dd>
+      <dt>凸共轭</dt><dd>把一个凸函数“换个角度描述”的变换：$\Phi(\boldsymbol{z})=\max_{\boldsymbol{p}}\ \boldsymbol{p}\cdot\boldsymbol{z}+H(\boldsymbol{p})$。</dd>
+      <dt>Fenchel-Young 损失</dt><dd>由凹函数 $H$ 同时确定“损失 + 配套激活函数”的框架，梯度总是 $\boldsymbol{q}-\boldsymbol{e}_i$。</dd>
+      <dt>Sparsemax / Entmax</dt><dd>Softmax 的替代品，能输出精确为 0 的概率（稀疏分布）。</dd>
+      <dt>拉格朗日乘子 $\lambda$</dt><dd>求带约束（这里是“概率和为 1”）的最优值时引入的辅助变量。</dd>
+    </dl>
+  </div>
+</section>
+</main>
+<footer>可视化解读 · 原文：<a href="https://kexue.fm/archives/11854" target="_blank">https://kexue.fm/archives/11854</a> · 页面中的数值均为实时计算 · <a href="../index.html">← 返回目录</a></footer>
+
+<script>
+/* ==== viz-core.js（内联快照，勿手改） ==== */
+/* viz-core.js — uKnowViz 共享可视化运行时 v1
+ * 无依赖（KaTeX 可选）。全部挂在全局 VIZ 上。API 说明见 references/components.md
+ *
+ *  数学      VIZ.clamp lerp linspace sum softmax logsumexp randn rng fmt fmtE integrate ease
+ *  颜色      VIZ.C（从 CSS 变量读取） VIZ.alpha(hex,a) VIZ.cmap.seq(u) VIZ.cmap.div(x,m)
+ *  画布      VIZ.plot(canvas, opts) → Plot（坐标映射 + 轴 + 线/面/柱/点/箭头/文字）
+ *            VIZ.heatmap(canvas, M, opts)
+ *  动画      VIZ.animate(ms, onFrame, onDone) VIZ.player({...})
+ *  控件      VIZ.slider(id, cb, digits) VIZ.num(id) VIZ.readout(id, html) VIZ.$(id)
+ *  组件      VIZ.stepper(el, steps) VIZ.schematic(canvas, opts)
+ *  生命周期  VIZ.onReady(fn) VIZ.onRender(fn) VIZ.redraw() VIZ.start()
+ */
+(function (global) {
+  'use strict';
+  const VIZ = {};
+  const $ = id => (typeof id === 'string' ? document.getElementById(id) : id);
+  VIZ.$ = $;
+
+  /* ============ 数学 ============ */
+  VIZ.clamp = (x, a, b) => Math.max(a, Math.min(b, x));
+  VIZ.lerp = (a, b, u) => a + (b - a) * u;
+  VIZ.linspace = (a, b, n) => Array.from({ length: n }, (_, i) => a + (b - a) * i / (n - 1));
+  VIZ.sum = arr => arr.reduce((s, x) => s + x, 0);
+  VIZ.logsumexp = arr => {
+    const f = arr.filter(Number.isFinite); if (!f.length) return -Infinity;
+    const m = Math.max(...f); return m + Math.log(VIZ.sum(f.map(x => Math.exp(x - m))));
+  };
+  /** softmax，-Infinity 视为被 mask（权重 0） */
+  VIZ.softmax = arr => {
+    const lse = VIZ.logsumexp(arr);
+    return arr.map(x => (Number.isFinite(x) ? Math.exp(x - lse) : 0));
+  };
+  /** 可复现随机数：const r = VIZ.rng(42); r() ∈ [0,1) */
+  VIZ.rng = seed => {
+    let a = (seed >>> 0) || 1;
+    return () => { a |= 0; a = (a + 0x6D2B79F5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+  };
+  /** 标准正态；可传入 VIZ.rng 生成器以复现 */
+  VIZ.randn = (r = Math.random) => {
+    let u = 0, v = 0; while (!u) u = r(); while (!v) v = r();
+    return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+  };
+  /** 定宽数字：正数前补空格，使读数列对齐 */
+  VIZ.fmt = (x, n = 4) => (!Number.isFinite(x) ? String(x) : (x >= 0 ? ' ' : '') + x.toFixed(n));
+  VIZ.fmtE = (x, n = 1) => x.toExponential(n);
+  /** 数值积分（复合 Simpson，n 取偶数），用于在页面上核对闭式解 */
+  VIZ.integrate = (f, a, b, n = 2000) => {
+    if (n % 2) n++; const h = (b - a) / n; let s = f(a) + f(b);
+    for (let i = 1; i < n; i++) s += f(a + i * h) * (i % 2 ? 4 : 2);
+    return s * h / 3;
+  };
+  VIZ.ease = {
+    inOut: u => (u < .5 ? 2 * u * u : 1 - Math.pow(-2 * u + 2, 2) / 2),
+    out: u => 1 - Math.pow(1 - u, 3),
+    linear: u => u,
+  };
+
+  /* ============ 颜色 ============ */
+  VIZ.C = {};
+  function loadPalette() {
+    const cs = getComputedStyle(document.documentElement);
+    ['bg', 'panel', 'panel2', 'line', 'text', 'muted', 'dim', 'new', 'base', 'pa', 'pb', 'approx', 'warn']
+      .forEach(k => { VIZ.C[k] = cs.getPropertyValue('--' + k).trim(); });
+  }
+  /** '#rgb' / '#rrggbb' → rgba 字符串 */
+  VIZ.alpha = (hex, a) => {
+    let h = hex.replace('#', ''); if (h.length === 3) h = h.split('').map(c => c + c).join('');
+    const n = parseInt(h, 16); return `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},${a})`;
+  };
+  const SEQ = [[13, 8, 135], [84, 2, 163], [139, 10, 165], [185, 50, 137], [219, 92, 104], [244, 136, 73], [254, 188, 43], [240, 249, 33]];
+  VIZ.cmap = {
+    /** 顺序色带（plasma 近似），u∈[0,1] */
+    seq(u) {
+      u = VIZ.clamp(u, 0, 1) * (SEQ.length - 1); const i = Math.floor(u), f = u - i;
+      const c0 = SEQ[i], c1 = SEQ[Math.min(i + 1, SEQ.length - 1)];
+      return `rgb(${c0.map((c, k) => Math.round(c + (c1[k] - c) * f)).join(',')})`;
+    },
+    /** 发散色带：负→蓝，0→深底色，正→红；m 为饱和值 */
+    div(x, m = 1) {
+      const u = VIZ.clamp(x / m, -1, 1);
+      return u >= 0 ? `rgb(${Math.round(30 + 225 * u)},${Math.round(34 + 30 * u)},${Math.round(64 + 10 * u)})`
+        : `rgb(${Math.round(30 - 10 * u)},${Math.round(34 - 100 * u)},${Math.round(64 - 180 * u)})`;
+    },
+  };
+
+  /* ============ 画布 ============ */
+  /** HiDPI 适配；每次重绘前调用（同时清空画布） */
+  VIZ.setup = cv => {
+    cv = $(cv);
+    const dpr = global.devicePixelRatio || 1, w = cv.clientWidth, h = cv.clientHeight;
+    cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr);
+    const ctx = cv.getContext('2d'); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.font = '12px Consolas, Menlo, monospace'; ctx.lineJoin = 'round';
+    return { ctx, w, h, cv };
+  };
+
+  class Plot {
+    /**
+     * opts.x=[x0,x1], opts.y=[y0,y1]   数据坐标范围
+     * opts.m={l,r,t,b}                 边距(px)
+     * opts.equal=true                  等比例（旋转、几何图）
+     * opts.box=[px0,py0,px1,py1]       只占画布的一部分（上下分栏时用）
+     * opts.keep=true                   不清空画布，在同一画布上叠加第二个坐标系（双 y 轴 / 分栏）
+     */
+    constructor(cv, opts = {}) {
+      const el = $(cv);
+      Object.assign(this, opts.keep ? { ctx: el.getContext('2d'), w: el.clientWidth, h: el.clientHeight, cv: el } : VIZ.setup(el));
+      const m = Object.assign({ l: 46, r: 16, t: 16, b: 30 }, opts.m || {});
+      const box = opts.box || [0, 0, this.w, this.h];
+      this.L = box[0] + m.l; this.R = box[2] - m.r; this.T = box[1] + m.t; this.B = box[3] - m.b;
+      this.x = (opts.x || [0, 1]).slice(); this.y = (opts.y || [0, 1]).slice();
+      if (opts.equal) {
+        const sx = (this.R - this.L) / (this.x[1] - this.x[0]), sy = (this.B - this.T) / (this.y[1] - this.y[0]);
+        const s = Math.min(sx, sy), cx = (this.x[0] + this.x[1]) / 2, cy = (this.y[0] + this.y[1]) / 2;
+        const hw = (this.R - this.L) / s / 2, hh = (this.B - this.T) / s / 2;
+        this.x = [cx - hw, cx + hw]; this.y = [cy - hh, cy + hh];
+      }
+    }
+    X(v) { return this.L + (this.R - this.L) * (v - this.x[0]) / (this.x[1] - this.x[0]); }
+    Y(v) { return this.B - (this.B - this.T) * (v - this.y[0]) / (this.y[1] - this.y[0]); }
+    /** 像素长度 ↔ 数据长度 */
+    sx(d) { return d * (this.R - this.L) / (this.x[1] - this.x[0]); }
+    sy(d) { return d * (this.B - this.T) / (this.y[1] - this.y[0]); }
+    _style(o, defColor) {
+      const c = this.ctx; c.strokeStyle = o.color || defColor || VIZ.C.text; c.lineWidth = o.width || 2;
+      c.setLineDash(o.dash || []); c.globalAlpha = o.alpha == null ? 1 : o.alpha;
+    }
+    _reset() { this.ctx.setLineDash([]); this.ctx.globalAlpha = 1; }
+    /** 坐标轴。o.xTicks/yTicks: 数组或 'auto'；o.xFmt/yFmt: 刻度文字格式（o.tickFmt 同时作用于两轴）；
+     *  o.xLabel/yLabel；o.grid；o.zero（画 y=0 / x=0 线） */
+    axes(o = {}) {
+      const c = this.ctx, C = VIZ.C;
+      const ticks = (t, r) => (t === 'auto' ? niceTicks(r[0], r[1], 5) : t || []);
+      const xt = ticks(o.xTicks, this.x), yt = ticks(o.yTicks, this.y);
+      c.strokeStyle = C.line; c.lineWidth = 1;
+      if (o.grid) {
+        c.globalAlpha = .45;
+        xt.forEach(v => { c.beginPath(); c.moveTo(this.X(v), this.T); c.lineTo(this.X(v), this.B); c.stroke(); });
+        yt.forEach(v => { c.beginPath(); c.moveTo(this.L, this.Y(v)); c.lineTo(this.R, this.Y(v)); c.stroke(); });
+        c.globalAlpha = 1;
+      }
+      c.beginPath(); c.moveTo(this.L, this.T); c.lineTo(this.L, this.B); c.lineTo(this.R, this.B); c.stroke();
+      if (o.zero) {
+        c.setLineDash([3, 4]);
+        if (this.y[0] < 0 && this.y[1] > 0) { c.beginPath(); c.moveTo(this.L, this.Y(0)); c.lineTo(this.R, this.Y(0)); c.stroke(); }
+        if (this.x[0] < 0 && this.x[1] > 0) { c.beginPath(); c.moveTo(this.X(0), this.T); c.lineTo(this.X(0), this.B); c.stroke(); }
+        c.setLineDash([]);
+      }
+      c.fillStyle = C.muted; c.textAlign = 'center'; c.textBaseline = 'alphabetic';
+      const def = v => +v.toFixed(3), xf = o.xFmt || o.tickFmt || def, yf = o.yFmt || o.tickFmt || def;
+      xt.forEach(v => c.fillText(xf(v), this.X(v), this.B + 16));
+      c.textAlign = 'right'; yt.forEach(v => c.fillText(yf(v), this.L - 6, this.Y(v) + 4));
+      if (o.xLabel) { c.textAlign = 'right'; c.fillText(o.xLabel, this.R, this.B - 6); }
+      if (o.yLabel) { c.textAlign = 'left'; c.fillText(o.yLabel, this.L + 6, this.T + 10); }
+      return this;
+    }
+    /** 函数曲线 y=f(x)。o.from/o.to/o.n/o.color/o.width/o.dash/o.clip(默认 true：超出 y 范围截断) */
+    fn(f, o = {}) {
+      const a = o.from ?? this.x[0], b = o.to ?? this.x[1], n = o.n || 300;
+      const pts = []; for (let i = 0; i <= n; i++) { const x = a + (b - a) * i / n; pts.push([x, f(x)]); }
+      return this.path(pts, o);
+    }
+    /** 折线（数据坐标点数组 [[x,y],...]） */
+    path(pts, o = {}) {
+      const c = this.ctx, clip = o.clip !== false; this._style(o, VIZ.C.new);
+      if (clip) { c.save(); c.beginPath(); c.rect(this.L, this.T - 2, this.R - this.L, this.B - this.T + 4); c.clip(); }
+      c.beginPath(); let started = false;
+      for (const [x, y] of pts) {
+        if (!Number.isFinite(y)) { started = false; continue; }
+        const px = this.X(x), py = this.Y(y); started ? c.lineTo(px, py) : c.moveTo(px, py); started = true;
+      }
+      c.stroke(); if (clip) c.restore(); this._reset(); return this;
+    }
+    /** 两曲线间填色：f 上沿，g 下沿（默认 0）。o.fill/o.from/o.to */
+    area(f, g = 0, o = {}) {
+      const c = this.ctx, a = o.from ?? this.x[0], b = o.to ?? this.x[1], n = o.n || 200;
+      const gf = typeof g === 'function' ? g : () => g;
+      c.beginPath();
+      for (let i = 0; i <= n; i++) { const x = a + (b - a) * i / n; const p = [this.X(x), this.Y(f(x))]; i ? c.lineTo(...p) : c.moveTo(...p); }
+      for (let i = n; i >= 0; i--) { const x = a + (b - a) * i / n; c.lineTo(this.X(x), this.Y(gf(x))); }
+      c.closePath(); c.fillStyle = o.fill || VIZ.alpha(VIZ.C.new, .3); c.fill(); return this;
+    }
+    /** 竖直柱：中心 x，高度 h（数据单位），o.w 像素宽，o.base 底部，o.fill/o.stroke/o.dash/o.label */
+    bar(x, h, o = {}) {
+      const c = this.ctx, w = o.w || 14, base = o.base || 0;
+      const x0 = this.X(x) - w / 2 + (o.dx || 0), y0 = this.Y(base + Math.max(h, 0)), y1 = this.Y(base + Math.min(h, 0));
+      if (o.fill !== null) { c.fillStyle = o.fill || VIZ.alpha(VIZ.C.base, .85); c.fillRect(x0, y0, w, y1 - y0); }
+      if (o.stroke) { c.strokeStyle = o.stroke; c.lineWidth = o.lineWidth || 1.5; c.setLineDash(o.dash || []); c.strokeRect(x0, y0, w, y1 - y0); c.setLineDash([]); }
+      if (o.label != null) { c.fillStyle = o.labelColor || VIZ.C.muted; c.textAlign = 'center'; c.fillText(o.label, x0 + w / 2, h >= 0 ? y0 - 4 : y1 + 12); }
+      return this;
+    }
+    dot(x, y, o = {}) {
+      const c = this.ctx; c.fillStyle = o.color || VIZ.C.text; c.globalAlpha = o.alpha ?? 1;
+      c.beginPath(); c.arc(this.X(x), this.Y(y), o.r || 4, 0, Math.PI * 2); c.fill(); c.globalAlpha = 1; return this;
+    }
+    /** 箭头（数据坐标），向量/梯度/旋转演示用 */
+    arrow(x0, y0, x1, y1, o = {}) {
+      const c = this.ctx, p0 = [this.X(x0), this.Y(y0)], p1 = [this.X(x1), this.Y(y1)];
+      const ang = Math.atan2(p1[1] - p0[1], p1[0] - p0[0]), hs = o.head || 9;
+      this._style(o, VIZ.C.text); c.beginPath(); c.moveTo(...p0); c.lineTo(...p1); c.stroke(); this._reset();
+      c.fillStyle = o.color || VIZ.C.text; c.beginPath(); c.moveTo(...p1);
+      c.lineTo(p1[0] - hs * Math.cos(ang - .4), p1[1] - hs * Math.sin(ang - .4));
+      c.lineTo(p1[0] - hs * Math.cos(ang + .4), p1[1] - hs * Math.sin(ang + .4)); c.closePath(); c.fill();
+      if (o.label) { c.textAlign = 'left'; c.fillText(o.label, p1[0] + 6, p1[1] - 6); }
+      return this;
+    }
+    vline(x, o = {}) { return this.path([[x, this.y[0]], [x, this.y[1]]], Object.assign({ color: VIZ.C.dim, width: 1, dash: [3, 4] }, o)); }
+    hline(y, o = {}) { return this.path([[this.x[0], y], [this.x[1], y]], Object.assign({ color: VIZ.C.dim, width: 1, dash: [3, 4] }, o)); }
+    /** 文字（数据坐标）。o.px=true 时 x,y 为像素坐标；o.align/o.color/o.size/o.bold */
+    text(s, x, y, o = {}) {
+      const c = this.ctx; c.fillStyle = o.color || VIZ.C.muted; c.textAlign = o.align || 'center';
+      if (o.size || o.bold) c.font = `${o.bold ? 'bold ' : ''}${o.size || 12}px Consolas, Menlo, "Microsoft YaHei", monospace`;
+      c.fillText(s, o.px ? x : this.X(x), o.px ? y : this.Y(y));
+      c.font = '12px Consolas, Menlo, monospace'; return this;
+    }
+  }
+  function niceTicks(a, b, n) {
+    const span = b - a, step0 = span / n, mag = Math.pow(10, Math.floor(Math.log10(step0)));
+    const step = [1, 2, 5, 10].map(k => k * mag).find(s => span / s <= n) || 10 * mag;
+    const out = []; for (let v = Math.ceil(a / step) * step; v <= b + 1e-9; v += step) out.push(+v.toFixed(10)); return out;
+  }
+  VIZ.niceTicks = niceTicks;
+  VIZ.Plot = Plot;
+  VIZ.plot = (cv, opts) => new Plot(cv, opts);
+
+  /**
+   * 热力图。M 为二维数组（行×列）。
+   * opts.color(v,r,c) → css 颜色（默认 seq(√v)）
+   * opts.mask(r,c) → true 表示不可见（如因果遮罩）
+   * opts.highlightRow / highlightCol：白框高亮
+   * opts.onClick({r,c})：点击回调（自动绑定一次）
+   * opts.rowLabel/colLabel：轴说明；opts.values=true 时在格子里写数值
+   */
+  VIZ.heatmap = (cv, M, opts = {}) => {
+    const { ctx, w, h } = VIZ.setup(cv); cv = $(cv);
+    const R = M.length, Cn = Math.max(...M.map(r => r.length)), pad = opts.pad ?? 22;
+    const cs = Math.min((w - pad - 6) / Cn, (h - pad - 8) / R), ox = pad + ((w - pad - 6) - cs * Cn) / 2, oy = 4;
+    const color = opts.color || (v => VIZ.cmap.seq(Math.sqrt(Math.max(0, v))));
+    for (let r = 0; r < R; r++) for (let c = 0; c < Cn; c++) {
+      const x = ox + c * cs, y = oy + r * cs, v = M[r][c];
+      ctx.fillStyle = (opts.mask && opts.mask(r, c)) || v == null ? '#0b0e1c' : color(v, r, c);
+      ctx.fillRect(x, y, cs - 1, cs - 1);
+      if (opts.values && v != null && !(opts.mask && opts.mask(r, c)) && cs > 22) {
+        ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.font = '10px Consolas';
+        ctx.fillText(typeof opts.values === 'function' ? opts.values(v) : v.toFixed(2), x + cs / 2, y + cs / 2 + 3);
+      }
+    }
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
+    if (opts.highlightRow != null) ctx.strokeRect(ox - 1, oy + opts.highlightRow * cs - 1, Cn * cs + 1, cs + 1);
+    if (opts.highlightCol != null) ctx.strokeRect(ox + opts.highlightCol * cs - 1, oy - 1, cs + 1, R * cs + 1);
+    ctx.fillStyle = VIZ.C.muted; ctx.textAlign = 'center'; ctx.font = '10px Consolas';
+    if (opts.colLabel) ctx.fillText(opts.colLabel, ox + Cn * cs / 2, oy + R * cs + 14);
+    if (opts.rowLabel) { ctx.save(); ctx.translate(10, oy + R * cs / 2); ctx.rotate(-Math.PI / 2); ctx.fillText(opts.rowLabel, 0, 0); ctx.restore(); }
+    cv._vizHeat = { ox, oy, cs, R, Cn, onClick: opts.onClick };
+    if (opts.onClick) { cv.classList.add('clickable'); }
+    if (!cv._vizHeatBound) {
+      cv._vizHeatBound = true;
+      cv.addEventListener('click', e => {
+        const g = cv._vizHeat; if (!g || !g.onClick) return; const b = cv.getBoundingClientRect();
+        const c = Math.floor((e.clientX - b.left - g.ox) / g.cs), r = Math.floor((e.clientY - b.top - g.oy) / g.cs);
+        if (r >= 0 && r < g.R && c >= 0 && c < g.Cn) g.onClick({ r, c });
+      });
+    }
+    return cv._vizHeat;
+  };
+
+  /* ============ 动画 ============ */
+  /** 跑一段 ms 毫秒的动画，onFrame(u∈[0,1])；返回取消函数 */
+  VIZ.animate = (ms, onFrame, onDone) => {
+    let stop = false; const t0 = performance.now();
+    const step = now => { if (stop) return; const u = Math.min(1, (now - t0) / ms); onFrame(u); u < 1 ? requestAnimationFrame(step) : onDone && onDone(); };
+    requestAnimationFrame(step); return () => { stop = true; };
+  };
+  /**
+   * 播放器：把「播放按钮 + 进度滑块 + 数值标签」绑定成一个可拖动、可播放的时间轴。
+   * VIZ.player({ button:'id', range:'id', label:'id'(可选), ms:2500, from:0(可选，从头播放的起点), onUpdate:u=>draw(u) })
+   * 返回 { set(u), play(), get() }。滑块需 min=0 max=1 step=0.001。
+   */
+  VIZ.player = o => {
+    let u = 0, cancel = null; const btn = $(o.button), rg = $(o.range), lb = o.label && $(o.label);
+    const txt = btn ? btn.textContent : '';
+    const set = v => { u = v; if (rg) rg.value = v; if (lb) lb.textContent = Math.round(v * 100) + '%'; o.onUpdate(v); };
+    const stopIt = () => { if (cancel) cancel(); cancel = null; if (btn) btn.textContent = txt; };
+    const play = () => {
+      if (cancel) { stopIt(); return; }
+      const start = u >= 1 ? (o.from || 0) : u; if (btn) btn.textContent = '⏸ 暂停';
+      cancel = VIZ.animate(o.ms * (1 - start), k => set(start + (1 - start) * k), stopIt);
+    };
+    if (btn) btn.addEventListener('click', play);
+    if (rg) rg.addEventListener('input', e => { stopIt(); set(+e.target.value); });
+    return { set, play, get: () => u };
+  };
+
+  /* ============ 控件 ============ */
+  VIZ.num = id => +$(id).value;
+  /**
+   * 绑定滑块：自动更新 <span class="val" data-for="id"> 的显示，并在 input 时调用 cb(value)。
+   * 不会立刻调用 cb（首帧由 VIZ.onRender 统一绘制）。
+   */
+  VIZ.slider = (id, cb, digits = 2) => {
+    const el = $(id), out = document.querySelector(`.val[data-for="${id}"]`);
+    const show = () => { if (out) out.textContent = (+el.value).toFixed(digits); };
+    el.addEventListener('input', () => { show(); cb && cb(+el.value); }); show();
+    return el;
+  };
+  VIZ.readout = (id, html) => { $(id).innerHTML = html; };
+
+  /* ============ 组件 ============ */
+  /**
+   * 公式分步展开器：逐行显示推导，每步一句“为什么”。
+   * steps: [{tex:'...LaTeX...', why:'这一步做了什么'}]
+   * 容器内自动生成 ◀ ▶ 按钮；需要 KaTeX。
+   */
+  VIZ.stepper = (el, steps, opts = {}) => {
+    el = $(el); el.classList.add('stepper'); el.innerHTML = '';
+    const rows = steps.map(s => {
+      const d = document.createElement('div'); d.className = 'step hidden';
+      const m = document.createElement('div');
+      try { global.katex.render(s.tex, m, { displayMode: true, throwOnError: false }); } catch (e) { m.textContent = s.tex; }
+      d.appendChild(m);
+      if (s.why) { const w = document.createElement('div'); w.className = 'why'; w.innerHTML = '↳ ' + s.why; d.appendChild(w); }
+      el.appendChild(d); return d;
+    });
+    const bar = document.createElement('div'); bar.className = 'controls';
+    bar.innerHTML = `<button data-a="prev">◀ 上一步</button><button class="primary" data-a="next">下一步 ▶</button><button data-a="all">全部展开</button><span class="note"></span>`;
+    el.appendChild(bar);
+    let k = opts.start ?? 0;
+    const show = () => {
+      rows.forEach((r, i) => { r.classList.toggle('hidden', i > k); r.classList.toggle('cur', i === k); });
+      bar.querySelector('.note').textContent = `第 ${k + 1} / ${rows.length} 步`;
+      opts.onStep && opts.onStep(k);
+    };
+    bar.addEventListener('click', e => {
+      const a = e.target.dataset.a; if (!a) return;
+      if (a === 'prev') k = Math.max(0, k - 1); if (a === 'next') k = Math.min(rows.length - 1, k + 1); if (a === 'all') k = rows.length - 1;
+      show();
+    });
+    show(); return { go: i => { k = i; show(); } };
+  };
+
+  /**
+   * 示意曲线（原文没有给数据时使用），永远带“示意图，非原文数据”水印。
+   * opts: { curves:[{name,color,f,dash}], progress:0..1, x:[0,1], y:[lo,hi], xLabel, yLabel, marks:[{x,label}] }
+   */
+  VIZ.schematic = (cv, o) => {
+    const legendW = 150, p = VIZ.plot(cv, { x: o.x || [0, 1], y: o.y, m: { l: 40, r: legendW, t: 16, b: 30 } });
+    p.axes({ xLabel: o.xLabel, yLabel: o.yLabel });
+    const prog = o.progress ?? 1, [x0, x1] = p.x;
+    (o.marks || []).forEach(m => { if ((m.x - x0) / (x1 - x0) <= prog) { p.vline(m.x); p.text(m.label, m.x, p.y[1], { color: VIZ.C.dim }); } });
+    o.curves.forEach((cv_, k) => {
+      p.fn(cv_.f, { color: cv_.color, dash: cv_.dash, width: 2.2, to: x0 + (x1 - x0) * prog });
+      const c = p.ctx; c.fillStyle = cv_.color; c.fillRect(p.R + 16, p.T + 8 + k * 22, 14, 3);
+      c.textAlign = 'left'; c.fillText(cv_.name, p.R + 36, p.T + 13 + k * 22);
+    });
+    p.text('示意图，非原文数据', p.R - 4, p.B - 8, { px: true, align: 'right', color: VIZ.C.warn });
+    return p;
+  };
+
+  /* ============ 生命周期 ============ */
+  const renders = [], readies = [];
+  /** 注册绘制函数：启动时、窗口缩放时自动重绘 */
+  VIZ.onRender = fn => { renders.push(fn); return fn; };
+  /** 注册一次性初始化（KaTeX 就绪后、首次绘制前执行；VIZ.stepper 应放在这里创建） */
+  VIZ.onReady = fn => { readies.push(fn); return fn; };
+  VIZ.redraw = () => renders.forEach(fn => { try { fn(); } catch (e) { reportError(e); } });
+
+  const KATEX_CDN = 'https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/';
+  function loadScript(src) {
+    return new Promise((ok, fail) => { const s = document.createElement('script'); s.src = src; s.onload = ok; s.onerror = fail; document.head.appendChild(s); });
+  }
+  /** 本地 _lib/katex 加载失败时自动回退 CDN */
+  async function ensureKatex() {
+    if (global.katex && global.renderMathInElement) return true;
+    try {
+      const l = document.createElement('link'); l.rel = 'stylesheet'; l.href = KATEX_CDN + 'katex.min.css'; document.head.appendChild(l);
+      if (!global.katex) await loadScript(KATEX_CDN + 'katex.min.js');
+      if (!global.renderMathInElement) await loadScript(KATEX_CDN + 'contrib/auto-render.min.js');
+      return true;
+    } catch (e) { reportError(new Error('KaTeX 加载失败：公式将以源码显示')); return false; }
+  }
+  function reportError(e) {
+    const msg = (e && (e.message || e.reason || e)) + '';
+    const root = document.documentElement; root.dataset.vizErrors = ((root.dataset.vizErrors || '') + msg + ' | ').slice(0, 2000);
+    let bar = document.getElementById('viz-errors');
+    if (!bar && document.body) { bar = document.createElement('div'); bar.id = 'viz-errors'; document.body.appendChild(bar); }
+    if (bar) { bar.style.display = 'block'; bar.textContent += '⚠ ' + msg + '\n'; }
+    console.error(e);
+  }
+  global.addEventListener('error', e => reportError(e.error || e.message));
+  global.addEventListener('unhandledrejection', e => reportError(e.reason));
+
+  /** 页面脚本最后调用：渲染公式 → 读取配色 → 首次绘制 → 监听缩放 */
+  VIZ.start = () => {
+    const go = async () => {
+      loadPalette();
+      if (await ensureKatex()) {
+        global.renderMathInElement(document.body, {
+          delimiters: [{ left: '$$', right: '$$', display: true }, { left: '$', right: '$', display: false }],
+          throwOnError: false, ignoredClasses: ['readout', 'no-math'],
+        });
+      }
+      readies.forEach(fn => { try { fn(); } catch (e) { reportError(e); } });
+      VIZ.redraw();
+      document.documentElement.dataset.vizReady = '1';
+    };
+    document.readyState === 'loading' ? document.addEventListener('DOMContentLoaded', go) : go();
+    let t; global.addEventListener('resize', () => { clearTimeout(t); t = setTimeout(VIZ.redraw, 120); });
+  };
+
+  global.VIZ = VIZ;
+})(window);
+</script>
+<script>
+/* ==== 页面脚本 ==== */
+'use strict';
+const { $, C, fmt } = VIZ;
+const sum = VIZ.sum;
+
+/* ---------- 文章中的数学 ---------- */
+const xlogx = x => (x > 0 ? x * Math.log(x) : 0);
+const pnorm = (q, a) => Math.pow(sum(q.map(x => Math.pow(x, a))), 1 / a);
+const nudge = a => (Math.abs(a - 1) < 1e-3 ? 1.001 : a);           // α=1 处取极限：用 1.001 近似
+/** 恰当评分规则：H 为凹函数，S 为原文表格中的评分公式 */
+const FAM = {
+  log:     { name: '对数(交叉熵)', H: p => -sum(p.map(xlogx)), S: (q, i) => -Math.log(q[i]) },
+  brier:   { name: 'Brier', H: p => 1 - sum(p.map(x => x * x)), S: (q, i) => sum(q.map((x, j) => (x - (j === i ? 1 : 0)) ** 2)) },
+  tsallis: { name: 'Tsallis', H: (p, a) => (1 - sum(p.map(x => x ** a))) / (a - 1),
+             S: (q, i, a) => sum(q.map(x => x ** a)) - a / (a - 1) * q[i] ** (a - 1) + 1 / (a - 1) },
+  sph:     { name: '球面', H: (p, a) => (1 - pnorm(p, a)) / (a - 1),
+             S: (q, i, a) => (1 - q[i] ** (a - 1) / pnorm(q, a) ** (a - 1)) / (a - 1) },
+  renyi:   { name: 'Rényi', H: (p, a) => Math.log(sum(p.map(x => x ** a))) / (1 - a),
+             S: (q, i, a) => { const T = sum(q.map(x => x ** a)); return (Math.log(T) + a * q[i] ** (a - 1) / T - a) / (1 - a); } },
+};
+const TOK = ['鸡', '鸭', '狗', '羊'];
+const ok = b => (b ? '<span class="ok">✓</span>' : '<span class="bad">✗</span>');
+
+/* ================= ① 逐条打分 ================= */
+const P1 = [0.5, 0.3, 0.15, 0.05], N1 = 300;
+const S1 = { u: 0.35, samples: [] };
+function sample1(seed = Math.floor(Math.random() * 1e9)) {
+  const r = VIZ.rng(seed);
+  S1.samples = Array.from({ length: N1 }, () => { let x = r(), i = 0; while (i < 3 && x > P1[i]) { x -= P1[i]; i++; } return i; });
+}
+const q1 = () => { const b = VIZ.num('c1-beta'); return P1.map(p => (1 - b) * 0.25 + b * p); };
+const draw1 = VIZ.onRender(() => {
+  const cv = $('c1'), W = cv.clientWidth, H = cv.clientHeight, split = W * 0.34, q = q1();
+  // 左：p 与 q
+  const L = VIZ.plot(cv, { x: [-0.6, 3.6], y: [0, 0.62], box: [0, 0, split, H], m: { l: 40, r: 10, t: 22, b: 30 } }).axes({ yTicks: [0, 0.2, 0.4, 0.6] });
+  const bw = L.sx(1) * 0.32;
+  TOK.forEach((t, i) => {
+    L.bar(i, P1[i], { w: bw, dx: -bw * 0.55, fill: VIZ.alpha(C.base, .85) }).bar(i, q[i], { w: bw, dx: bw * 0.55, fill: VIZ.alpha(C.new, .9) });
+    L.text(t, L.X(i), L.B + 18, { px: true, color: C.text });
+  });
+  L.text('“白切 __” 的下一个词', L.L + 4, L.T - 8, { px: true, align: 'left' });
+  // 右：逐条罚分与累计平均
+  const n = Math.max(1, Math.round(S1.u * N1)), exact = sum(P1.map((p, i) => -p * Math.log(q[i])));
+  const R = VIZ.plot(cv, { keep: true, x: [0, N1], y: [0, Math.max(3.4, exact * 1.4)], box: [split, 0, W, H], m: { l: 44, r: 14, t: 22, b: 30 } })
+    .axes({ xTicks: 'auto', yTicks: 'auto', xLabel: '样本数', yLabel: '罚分' });
+  let acc = 0; const avg = [];
+  for (let k = 0; k < n; k++) {
+    const loss = -Math.log(q[S1.samples[k]]); acc += loss; avg.push([k + 1, acc / (k + 1)]);
+    R.dot(k + 1, loss, { r: 1.6, color: C.approx, alpha: .3 });
+  }
+  R.hline(exact, { color: C.text, dash: [6, 4], width: 1.5 }).path(avg, { color: C.approx, width: 2.2 });
+  const last = S1.samples.slice(Math.max(0, n - 6), n).map(i => '白切' + TOK[i]).join('  ');
+  R.text('最近：' + last, R.R, R.T - 8, { px: true, align: 'right', color: C.text });
+  const Hp = -sum(P1.map(xlogx)), est = acc / n;
+  VIZ.readout('c1-out',
+`已读入 ${String(n).padStart(3)} 条样本      q = [${q.map(x => x.toFixed(3)).join(', ')}]
+逐条罚分累计平均        = ${fmt(est)}
+精确期望 L(p,q)=Σp·(−log q) = <b>${fmt(exact)}</b>    差 ${fmt(est - exact)}  ${Math.abs(est - exact) < 0.05 ? '<span class="ok">✓ 已收敛</span>' : '（样本越多越接近）'}
+最优值 H(p)（q=p 时）    = ${fmt(Hp)}    当前多付的代价 = ${fmt(exact - Hp)} = KL(p‖q)
+TV 的逐条罚分 |1 − q_i/p_i|：<span class="bad">需要 p_i，训练时拿不到 ✗</span>`);
+});
+VIZ.player({ button: 'c1-play', range: 'c1-t', label: 'c1-tv', ms: 6000, onUpdate: u => { S1.u = u; draw1(); } });
+VIZ.slider('c1-beta', draw1);
+$('c1-rand').onclick = () => { sample1(); draw1(); };
+
+/* ================= ② 恰当性 ================= */
+const draw2 = VIZ.onRender(() => {
+  const p = VIZ.num('c2-p');
+  const curves = [
+    ['交叉熵', C.base, q => -p * Math.log(q) - (1 - p) * Math.log(1 - q)],
+    ['Brier', C.pb, q => 2 * p * (1 - q) ** 2 + 2 * (1 - p) * q ** 2],
+    ['线性打分', C.warn, q => 1 - p * q - (1 - p) * (1 - q)],
+  ];
+  const P = VIZ.plot('c2', { x: [0, 1], y: [0, 1.5], m: { l: 44, r: 16, t: 14, b: 32 } })
+    .axes({ xTicks: [0, .25, .5, .75, 1], yTicks: 'auto', xLabel: 'q（模型报的“鸡”概率）', yLabel: 'L(p,q)' });
+  P.vline(p, { color: C.text });
+  const grid = VIZ.linspace(0.001, 0.999, 2001);
+  let lines = `真实 p = ${p.toFixed(2)}\n`;
+  curves.forEach(([name, col, f]) => {
+    P.fn(f, { from: 0.003, to: 0.997, color: col, width: 2.4 });
+    const qs = grid.reduce((b, q) => (f(q) < f(b) ? q : b), grid[0]);
+    P.dot(qs, f(qs), { r: 6, color: col });
+    const good = Math.abs(qs - p) < 0.002;
+    lines += `${name.padEnd(5, '　')} 最低点 q* = ${qs.toFixed(3)}   ${good ? '<span class="ok">✓ q* = p，说真话最划算</span>' : '<span class="bad">✗ 跑到边界：鼓励夸大</span>'}\n`;
+  });
+  VIZ.readout('c2-out', lines.trimEnd());
+});
+VIZ.slider('c2-p', draw2);
+
+/* ================= ③ 切线 ================= */
+const S3 = { tracing: false };
+function fam3() {
+  const key = $('c3-fam').value; let a = VIZ.num('c3-a'), note = '';
+  if (key === 'log' || key === 'brier') note = '（该评分不含 α）';
+  if (key === 'renyi' && a >= 0.98) { a = 0.98; note = 'Rényi 要求 0<α<1，此处按 α=0.98 计算'; }
+  return { key, a: nudge(a), note };
+}
+const draw3 = VIZ.onRender(() => {
+  const { key, a, note } = fam3(), F = FAM[key], q = VIZ.num('c3-q'), p = VIZ.num('c3-p');
+  $('c3-qv').textContent = q.toFixed(3); $('c3-anote').textContent = note;
+  const h = x => F.H([x, 1 - x], a), eps = 1e-5;
+  const dh = x => (h(x + eps) - h(x - eps)) / (2 * eps);
+  const Hmax = Math.max(...VIZ.linspace(0.001, 0.999, 400).map(h));
+  const P = VIZ.plot('c3', { x: [0, 1], y: [-Hmax * 0.05, Hmax * 2.5], m: { l: 46, r: 46, t: 16, b: 32 } })
+    .axes({ xTicks: [0, .25, .5, .75, 1], yTicks: 'auto', xFmt: v => (v === 0 ? '0 全是鸭' : v === 1 ? '1 全是鸡' : +v.toFixed(3)) });
+  // 切线：L(x,q) = x·S(q,鸡) + (1−x)·S(q,鸭)，切线公式由数值导数给出
+  const tangent = qq => [h(qq) + (1 - qq) * dh(qq), h(qq) - qq * dh(qq)];   // [S(q,鸡), S(q,鸭)]
+  if (S3.tracing) VIZ.linspace(0.02, q, Math.max(2, Math.round((q - 0.02) / 0.03))).forEach(qq => {
+    const [s1, s2] = tangent(qq); P.path([[0, s2], [1, s1]], { color: VIZ.alpha(C.new, .22), width: 1 });
+  });
+  P.area(x => h(Math.min(Math.max(x, 1e-6), 1 - 1e-6)), 0, { fill: VIZ.alpha(C.base, .1), n: 300 })
+   .fn(x => h(Math.min(Math.max(x, 1e-6), 1 - 1e-6)), { color: C.base, width: 2.6 });
+  const [s1, s2] = tangent(q), Lp = p * s1 + (1 - p) * s2, Hp = h(Math.min(Math.max(p, 1e-9), 1 - 1e-9));
+  P.path([[0, s2], [1, s1]], { color: C.new, width: 2.4 });
+  P.vline(q, { color: C.dim }).dot(q, h(q), { r: 5, color: C.text });
+  // 两端高度 = 两个词各自的罚分
+  const top = P.y[1];
+  [[1, s1, C.pb, 'S(q,鸡)'], [0, s2, C.pa, 'S(q,鸭)']].forEach(([x, s, col, lab]) => {
+    const y = Math.min(s, top), px = P.X(x), al = x ? 'right' : 'left', off = x ? -10 : 10;
+    if (s <= top) P.dot(x, s, { r: 6, color: col });
+    P.text(`${lab}=${s.toFixed(3)}${s > top ? ' ↑' : ''}`, px + off, P.Y(y) - 10, { px: true, align: al, color: col });
+  });
+  // 缝隙
+  P.path([[p, Hp], [p, Lp]], { color: C.warn, width: 3 }).dot(p, Hp, { r: 3.5, color: C.warn }).dot(p, Lp, { r: 3.5, color: C.warn });
+  // 核对：切线公式 vs 原文表格公式
+  const qv = [q, 1 - q], t1 = F.S(qv, 0, a), t2 = F.S(qv, 1, a);
+  const match = Math.abs(t1 - s1) < 1e-4 && Math.abs(t2 - s2) < 1e-4;
+  const kl = key === 'log' ? (xlogx(p) - p * Math.log(q)) + (xlogx(1 - p) - (1 - p) * Math.log(1 - q)) : null;
+  VIZ.readout('c3-out',
+`${F.name}${['log', 'brier'].includes(key) ? '' : `  α=${a.toFixed(3)}`}     q=${q.toFixed(3)}  H(q)=${fmt(h(q))}  H'(q)=${fmt(dh(q))}（数值求导）
+S(q,鸡)：切线公式 H+(1−q)H' = ${fmt(s1)}   表格公式 = ${fmt(t1)}
+S(q,鸭)：切线公式 H−q·H'    = ${fmt(s2)}   表格公式 = ${fmt(t2)}   ${match ? '<span class="ok">✓ 切线 = 原文表格中的评分</span>' : '<span class="bad">✗ 不一致</span>'}
+p=${p.toFixed(2)}：L(p,q) = ${fmt(Lp)}   H(p) = ${fmt(Hp)}   缝隙 = <b>${fmt(Lp - Hp)}</b> ${Lp - Hp >= -1e-9 ? '<span class="ok">≥ 0 ✓</span>' : ''}${kl != null ? `   KL(p‖q) = ${fmt(kl)} ${ok(Math.abs(kl - (Lp - Hp)) < 1e-6)}` : ''}`);
+});
+VIZ.slider('c3-q', () => { S3.tracing = false; draw3(); }, 3);
+VIZ.slider('c3-p', draw3); VIZ.slider('c3-a', draw3);
+$('c3-fam').onchange = () => {
+  const k = $('c3-fam').value;
+  if (k === 'renyi' && VIZ.num('c3-a') >= 1) { $('c3-a').value = 0.5; $('c3-a').dispatchEvent(new Event('input')); }
+  draw3();
+};
+$('c3-play').onclick = () => VIZ.animate(4500, u => { $('c3-q').value = 0.02 + 0.96 * u; S3.tracing = true; draw3(); });
+
+/* ================= ④ 评分家族 ================= */
+VIZ.onReady(() => VIZ.stepper('st4', [
+  { tex: String.raw`S(\boldsymbol{q},i)=S(q_i)\ \Rightarrow\ H(\boldsymbol{q}) = L(\boldsymbol{q},\boldsymbol{q}) = \sum_i q_i S(q_i)`, why: '假设罚分只看正确词的概率，那么 H 就是“自己给自己打分”的平均' },
+  { tex: String.raw`\partial_i H = S(q_i) + q_i S'(q_i),\qquad \boldsymbol{q}\cdot\nabla H = \sum_j q_j S(q_j) + \sum_j q_j^2 S'(q_j)`, why: '对 H 求偏导，并算出 q·∇H' },
+  { tex: String.raw`\cancel{S(q_i)} = \cancel{S(q_i)} + q_i S'(q_i) - \sum_j q_j^2 S'(q_j)`, why: '代入 S(q,i) = H + ∂ᵢH − q·∇H，两边的 S(qᵢ) 抵消' },
+  { tex: String.raw`q_i S'(q_i) = \sum_j q_j^2 S'(q_j) \equiv -c`, why: '右边对单个 qᵢ 而言相当于常数（严谨论证见下方附注）' },
+  { tex: String.raw`S(q_i) = -c\log q_i`, why: '解这个微分方程，得到的正是对数评分（交叉熵）' },
+]));
+const famColor = () => ({ log: C.base, brier: C.pb, tsallis: C.pa, sph: C.muted, renyi: C.approx });
+const draw4a = VIZ.onRender(() => {
+  const a = nudge(VIZ.num('c4-a')), col = famColor();
+  const P = VIZ.plot('c4a', { x: [0, 1], y: [0, 4], m: { l: 36, r: 12, t: 12, b: 30 } })
+    .axes({ xTicks: [0, .5, 1], yTicks: [0, 1, 2, 3, 4], xLabel: 'q（正确词概率）', yLabel: 'S' });
+  const bin = (k, q) => FAM[k].S([q, 1 - q], 0, a);
+  const fams = ['tsallis', 'sph'].concat(a < 1 ? ['renyi'] : []);
+  fams.forEach(k => P.fn(q => bin(k, q), { from: 0.002, to: 1, color: col[k], width: 2.2 }));
+  P.fn(q => -Math.log(q), { from: 0.002, to: 1, color: col.log, width: 2, dash: [6, 4] });
+  const grid = VIZ.linspace(0.05, 1, 200);
+  let lines = `α = ${a.toFixed(3)}（偏差 = q∈[0.05,1] 上与 −log q 的最大差）\n`;
+  fams.forEach(k => {
+    const dev = Math.max(...grid.map(q => Math.abs(bin(k, q) + Math.log(q))));
+    const at0 = bin(k, 0);
+    lines += `${FAM[k].name.padEnd(8)} 偏差 ${fmt(dev, 4)}${dev < 0.02 ? ' <span class="ok">✓</span>' : '  '}  q→0 罚分 ${Number.isFinite(at0) ? fmt(at0, 3) : '∞'}\n`;
+  });
+  if (a >= 1) lines += 'Rényi 仅 0<α<1 有定义（拖到 1 以下可见）\n';
+  VIZ.readout('c4a-out', lines + '交叉熵                       q→0 罚分 ∞');
+});
+VIZ.slider('c4-a', draw4a);
+$('c4-one').onclick = () => { $('c4-a').value = 1; $('c4-a').dispatchEvent(new Event('input')); };
+
+const F4 = [['log', 1, '交叉熵'], ['brier', 2, 'Brier'], ['tsallis', 1.5, 'Tsallis 1.5'], ['sph', 2, '球面 2'], ['renyi', 0.5, 'Rényi 0.5']];
+const draw4b = VIZ.onRender(() => {
+  const qi = VIZ.num('c4-qi'), r = VIZ.num('c4-r'), col = famColor();
+  const qv = rr => [qi, (1 - qi) * rr, (1 - qi) * (1 - rr)];
+  const rows = F4.map(([k, a, name]) => {
+    const vals = VIZ.linspace(0, 1, 101).map(rr => FAM[k].S(qv(rr), 0, a));
+    return { k, name, v: FAM[k].S(qv(r), 0, a), lo: Math.min(...vals), hi: Math.max(...vals) };
+  });
+  const yMax = Math.max(...rows.map(o => o.hi)) * 1.2;
+  const P = VIZ.plot('c4b', { x: [-0.6, 4.6], y: [0, yMax], m: { l: 36, r: 10, t: 14, b: 30 } }).axes({ yTicks: 'auto' });
+  const bw = P.sx(1) * 0.5;
+  rows.forEach((o, x) => {
+    P.bar(x, o.v, { w: bw, fill: VIZ.alpha(col[o.k], .85), label: o.v.toFixed(3) });
+    if (o.hi - o.lo > 1e-9) {
+      P.path([[x + .32, o.lo], [x + .32, o.hi]], { color: C.warn, width: 2.5 });
+      P.path([[x + .26, o.lo], [x + .38, o.lo]], { color: C.warn, width: 2 }).path([[x + .26, o.hi], [x + .38, o.hi]], { color: C.warn, width: 2 });
+    }
+    P.text(o.name, P.X(x), P.B + 18, { px: true, color: C.text });
+  });
+  const q = qv(r);
+  VIZ.readout('c4b-out', `q = [${q.map(x => x.toFixed(3)).join(', ')}]（第 1 个是正确词）\n` +
+    rows.map(o => `${o.name.padEnd(11)} 罚分 ${fmt(o.v, 3)}  变化幅度 ${fmt(o.hi - o.lo, 3)} ${o.hi - o.lo < 1e-9 ? '<span class="ok">✓ 不变</span>' : ''}`).join('\n'));
+});
+VIZ.slider('c4-qi', draw4b); VIZ.slider('c4-r', draw4b);
+
+/* ================= ⑤ 梯度 ================= */
+const sm = z => VIZ.softmax(z);
+const ceL = z => -Math.log(sm(z)[0]);
+const brL = z => { const q = sm(z); return (q[0] - 1) ** 2 + q[1] ** 2; };
+const sig = m => 1 / (1 + Math.exp(-m));
+const draw5a = VIZ.onRender(() => {
+  const m = VIZ.num('c5-m'), cv = $('c5a'), W = cv.clientWidth, H = cv.clientHeight, mid = H * 0.5;
+  const top = VIZ.plot(cv, { x: [-8, 8], y: [0, 4], box: [0, 0, W, mid], m: { l: 40, r: 12, t: 18, b: 22 } }).axes({ xTicks: [-8, -4, 0, 4, 8], yTicks: [0, 2, 4] });
+  const bot = VIZ.plot(cv, { keep: true, x: [-8, 8], y: [0, 1.05], box: [0, mid, W, H], m: { l: 40, r: 12, t: 18, b: 28 } }).axes({ xTicks: [-8, -4, 0, 4, 8], yTicks: [0, .5, 1], xLabel: 'margin m' });
+  top.text('损失', top.L + 6, top.T - 4, { px: true, align: 'left' });
+  bot.text('梯度大小 |∂S/∂m|', bot.L + 6, bot.T - 4, { px: true, align: 'left' });
+  const ceG = x => 1 - sig(x), brG = x => 4 * sig(x) * (1 - sig(x)) ** 2;
+  top.fn(x => Math.log1p(Math.exp(-x)), { color: C.base, width: 2.4 }).fn(x => 2 * (1 - sig(x)) ** 2, { color: C.pb, width: 2.4 });
+  bot.fn(ceG, { color: C.base, width: 2.4 }).fn(brG, { color: C.pb, width: 2.4 });
+  [top, bot].forEach(P => P.vline(m, { color: C.text }));
+  top.dot(m, Math.min(4, Math.log1p(Math.exp(-m))), { color: C.base, r: 5 }).dot(m, 2 * (1 - sig(m)) ** 2, { color: C.pb, r: 5 });
+  bot.dot(m, ceG(m), { color: C.base, r: 5 }).dot(m, brG(m), { color: C.pb, r: 5 });
+  bot.text('← 自信地错误', bot.X(-7.8), bot.Y(0.85), { px: true, align: 'left', color: C.warn });
+  // 核对：原文矩阵公式 vs 数值差分
+  const z = [m, 0], q = sm(z), d = [q[0] - 1, q[1]];
+  const J = [[q[0] - q[0] * q[0], -q[0] * q[1]], [-q[1] * q[0], q[1] - q[1] * q[1]]];
+  const gB = J.map(row => 2 * (row[0] * d[0] + row[1] * d[1]));
+  const fd = (f, j) => { const e = [0, 0]; e[j] = 1e-5; return (f(z.map((v, k) => v + e[k])) - f(z.map((v, k) => v - e[k]))) / 2e-5; };
+  const gBn = [fd(brL, 0), fd(brL, 1)], gCn = [fd(ceL, 0), fd(ceL, 1)];
+  VIZ.readout('c5a-out',
+`m = ${fmt(m, 2)}   q_鸡 = ${q[0].toFixed(4)}   ${m < -3 ? '<span class="bad">（自信地错误）</span>' : ''}
+交叉熵   ∇z = q − e_鸡 = [${fmt(q[0] - 1)}, ${fmt(q[1])}]   数值差分 [${fmt(gCn[0])}, ${fmt(gCn[1])}] ${ok(Math.abs(gCn[0] - q[0] + 1) < 1e-5)}
+平方损失 ∇z = 2(diag(q)−qqᵀ)(q−e_鸡) = [${fmt(gB[0])}, ${fmt(gB[1])}]   数值差分 [${fmt(gBn[0])}, ${fmt(gBn[1])}] ${ok(Math.abs(gBn[0] - gB[0]) < 1e-5)}
+梯度大小之比  平方损失 / 交叉熵 = <b>${(Math.abs(gB[0]) / Math.abs(q[0] - 1)).toFixed(4)}</b>`);
+});
+VIZ.slider('c5-m', draw5a);
+
+const K5 = 80, S5 = { u: 1 };
+function train5() {
+  const m0 = VIZ.num('c5-m0'), lr = VIZ.num('c5-lr');
+  const run = g => { const ms = [m0]; for (let k = 0; k < K5; k++) ms.push(ms[k] + lr * g(ms[k])); return ms.map(sig); };
+  return { ce: run(m => 1 - sig(m)), br: run(m => 4 * sig(m) * (1 - sig(m)) ** 2) };
+}
+const draw5b = VIZ.onRender(() => {
+  const { ce, br } = train5(), n = Math.round(S5.u * K5);
+  const P = VIZ.plot('c5b', { x: [0, K5], y: [0, 1.02], m: { l: 40, r: 12, t: 14, b: 30 } })
+    .axes({ xTicks: 'auto', yTicks: [0, .5, .9, 1], xLabel: '训练步数', yLabel: 'q_鸡' });
+  P.hline(0.9, { color: C.dim });
+  [[ce, C.base], [br, C.pb]].forEach(([s, col]) => {
+    P.path(s.slice(0, n + 1).map((y, k) => [k, y]), { color: col, width: 2.4 }); P.dot(n, s[n], { color: col, r: 5 });
+  });
+  const reach = s => { const k = s.findIndex(y => y > 0.9); return k < 0 ? `${K5} 步内未达到` : `第 ${k} 步`; };
+  VIZ.readout('c5b-out',
+`第 ${n} 步：交叉熵 q_鸡 = ${ce[n].toFixed(4)}    平方损失 q_鸡 = ${br[n].toFixed(4)}
+达到 q_鸡 > 0.9：交叉熵 <b>${reach(ce)}</b>    平方损失 <b>${reach(br)}</b>
+（直接把 margin 当参数做梯度下降：m ← m − η·∂S/∂m）`);
+});
+VIZ.player({ button: 'c5-play', range: 'c5-t', label: 'c5-tv', ms: 4000, onUpdate: u => { S5.u = u; draw5b(); } });
+VIZ.slider('c5-m0', draw5b, 1); VIZ.slider('c5-lr', draw5b);
+
+/* ================= ⑥ 反推激活 ================= */
+VIZ.onReady(() => VIZ.stepper('st6', [
+  { tex: String.raw`\nabla_{\boldsymbol{z}} S(\boldsymbol{q}, i) = \boldsymbol{q} - \boldsymbol{e}_i,\quad \boldsymbol{e}_i= \nabla_{\boldsymbol{z}} z_i\ \Rightarrow\ \nabla_{\boldsymbol{z}} \big(S(\boldsymbol{q}, i) + z_i\big) = \boldsymbol{q}`, why: '把 eᵢ 写成 zᵢ 的梯度，移到左边' },
+  { tex: String.raw`\Phi(\boldsymbol{z}) = S(\boldsymbol{q}, i) + z_i,\qquad \boldsymbol{q} = \nabla_{\boldsymbol{z}}\Phi(\boldsymbol{z})`, why: '右边与 i 无关，所以存在一个与 i 无关的标量函数 Φ' },
+  { tex: String.raw`\Phi(\boldsymbol{z}) - \boldsymbol{p}\cdot\boldsymbol{z} = L(\boldsymbol{p},\boldsymbol{q})\geq H(\boldsymbol{p})`, why: '移项得 Φ − zᵢ = S(q,i)，两端乘 pᵢ 后求和' },
+  { tex: String.raw`\Phi(\boldsymbol{z}) \geq \boldsymbol{p}\cdot\boldsymbol{z} + H(\boldsymbol{p})\ \ \forall \boldsymbol{p},\qquad \boldsymbol{p}=\boldsymbol{q}\ \text{时取等号}`, why: 'Φ 是所有 p·z + H(p) 的上界，并且能取到' },
+  { tex: String.raw`\Phi(\boldsymbol{z}) = \max_{\boldsymbol{p}\in\Delta^{n-1}} \boldsymbol{p}\cdot \boldsymbol{z} + H(\boldsymbol{p}),\qquad \boldsymbol{q} = \mathop{\text{argmax}}_{\boldsymbol{p}\in\Delta^{n-1}} \boldsymbol{p}\cdot \boldsymbol{z} + H(\boldsymbol{p})`, why: '所以最优激活函数就是“最大化 p·z + H(p) 的那个 p”' },
+]));
+const H6 = (p, a) => (Math.abs(a - 1) < 1e-3 ? FAM.log.H(p) : FAM.tsallis.H(p, a));
+/** Entmax-α：q_i = [((α−1)/α)(z_i − λ)]_+^{1/(α−1)}，λ 由 Σq=1 二分求解；α=1 时为 Softmax */
+function entmax(z, a) {
+  if (Math.abs(a - 1) < 1e-3) return { q: VIZ.softmax(z), lam: VIZ.logsumexp(z) };
+  const zm = Math.max(...z), c = (a - 1) / a, ex = 1 / (a - 1);
+  const qOf = lam => z.map(zi => { const b = c * (zi - lam); return b > 0 ? Math.pow(b, ex) : 0; });
+  const tot = lam => sum(qOf(lam));
+  let lo, hi;
+  if (a > 1) { lo = zm - 1 / c; hi = zm; } else { lo = zm + 1e-12; hi = zm + 1; while (tot(hi) > 1) hi = zm + (hi - zm) * 2; }
+  for (let k = 0; k < 200; k++) { const mid = (lo + hi) / 2; tot(mid) > 1 ? (lo = mid) : (hi = mid); }
+  const lam = (lo + hi) / 2, q = qOf(lam), s = sum(q);
+  return { q: q.map(x => x / s), lam };
+}
+const S6 = { z: [2.0, 1.4, 0.2, -0.6] };
+const draw6 = VIZ.onRender(() => {
+  const dz = VIZ.num('c6-dz'), a = VIZ.num('c6-a'), cv = $('c6a'), W = cv.clientWidth, H = cv.clientHeight, split = W * 0.5;
+  // 左：目标函数 p·z + H(p) 及其最高点
+  const f = p => p * dz + H6([p, 1 - p], a), grid = VIZ.linspace(0, 1, 4001), fv = grid.map(f);
+  const lo = Math.min(...fv), hi = Math.max(...fv), pad = (hi - lo) * 0.15 + 1e-3;
+  const L = VIZ.plot(cv, { x: [0, 1], y: [lo - pad, hi + pad], box: [0, 0, split, H], m: { l: 44, r: 16, t: 20, b: 30 } })
+    .axes({ xTicks: [0, .5, 1], yTicks: 'auto', xLabel: 'p（鸡）' });
+  L.text('目标 p·z + H(p)', L.L + 4, L.T - 6, { px: true, align: 'left' });
+  L.fn(f, { color: C.approx, width: 2.4, n: 400 });
+  const qNum = grid[fv.indexOf(hi)], qCl = entmax([dz, 0], a).q[0];
+  L.vline(qCl, { color: C.new, width: 2, dash: [] }).dot(qCl, f(qCl), { r: 6, color: C.new });
+  // 右：q_鸡 随 Δz 的变化
+  const R = VIZ.plot(cv, { keep: true, x: [-3, 3], y: [0, 1.02], box: [split, 0, W, H], m: { l: 40, r: 14, t: 20, b: 30 } })
+    .axes({ xTicks: [-3, -2, -1, 0, 1, 2, 3], yTicks: [0, .5, 1], xLabel: 'Δz' });
+  R.text('激活函数：q_鸡 随 Δz', R.L + 4, R.T - 6, { px: true, align: 'left' });
+  R.fn(x => sig(x), { color: C.base, width: 2, dash: [6, 4] }).fn(x => entmax([x, 0], a).q[0], { color: C.new, width: 2.6, n: 300 });
+  R.vline(dz).dot(dz, qCl, { r: 6, color: C.new });
+  draw6b(a);
+  // 核对
+  const { q, lam } = entmax(S6.z, a), Phi = z => { const r = entmax(z, a).q; return sum(r.map((x, i) => x * z[i])) + H6(r, a); };
+  const gPhi = S6.z.map((_, j) => { const e = S6.z.map((_, k) => (k === j ? 1e-5 : 0)); return (Phi(S6.z.map((v, k) => v + e[k])) - Phi(S6.z.map((v, k) => v - e[k]))) / 2e-5; });
+  const err = Math.max(...gPhi.map((g, j) => Math.abs(g - q[j])));
+  const zeros = q.filter(x => x === 0).length;
+  VIZ.readout('c6-out',
+`α = ${a.toFixed(2)}   ${Math.abs(a - 1) < 1e-3 ? 'Softmax' : Math.abs(a - 2) < 1e-3 ? 'Sparsemax' : 'Entmax-α'}
+两词：目标函数最高点（网格搜索） q_鸡 = ${qNum.toFixed(4)}    闭式解 + 二分求 λ = ${qCl.toFixed(4)}  ${ok(Math.abs(qNum - qCl) < 1e-3)}
+四词：logits z = [${S6.z.map(x => x.toFixed(2)).join(', ')}]   λ = ${fmt(lam, 4)}
+      q = [${q.map(x => x.toFixed(4)).join(', ')}]   精确为 0 的词：<b>${zeros}</b> 个
+Fenchel-Young：∇Φ(z)（数值差分）与 q 的最大差 = ${VIZ.fmtE(err)}  ${ok(err < 1e-4)}  ⇒ 损失 Φ(z) − z_i 的梯度正是 q − e_i`);
+});
+function draw6b(a) {
+  const z = S6.z, q = entmax(z, a).q, s = VIZ.softmax(z);
+  const P = VIZ.plot('c6b', { x: [-0.6, 3.6], y: [0, Math.max(...q, ...s) * 1.25], m: { l: 40, r: 10, t: 18, b: 30 } }).axes({ yTicks: 'auto' });
+  P.text('“白切 __” 四个候选词：Entmax-α（紫）vs Softmax（绿框）', P.L + 4, P.T - 6, { px: true, align: 'left' });
+  const bw = P.sx(1) * 0.42;
+  z.forEach((zi, i) => {
+    P.bar(i, s[i], { w: bw + 8, fill: null, stroke: C.base, dash: [4, 3] });
+    P.bar(i, q[i], { w: bw, fill: VIZ.alpha(C.new, .9), label: q[i] === 0 ? '=0' : q[i].toFixed(3), labelColor: q[i] === 0 ? C.warn : C.muted });
+    P.text(`${TOK[i]} (z=${zi.toFixed(1)})`, P.X(i), P.B + 18, { px: true, color: C.text });
+  });
+}
+VIZ.slider('c6-dz', draw6); VIZ.slider('c6-a', draw6);
+const setA6 = v => { $('c6-a').value = v; $('c6-a').dispatchEvent(new Event('input')); };
+$('c6-soft').onclick = () => setA6(1); $('c6-sparse').onclick = () => setA6(2);
+$('c6-rand').onclick = () => { S6.z = S6.z.map(() => +(VIZ.randn() * 1.2).toFixed(1)).sort((x, y) => y - x); draw6(); };
+
+sample1(20261020);
+VIZ.start();
+</script>
+</body>
+</html>

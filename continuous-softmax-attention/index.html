@@ -1,0 +1,1150 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>连续化 Softmax Attention · 可视化解读</title>
+<!-- 首页索引（build_index.py）读取以下 viz:* 元信息 -->
+<meta name="viz:title" content="连续化 Softmax Attention">
+<meta name="viz:summary" content="把求和换成积分再算回来：连续化 Softmax Attention ≈ 给注意力分数加了一个 Short Conv 平滑。">
+<meta name="viz:source" content="https://kexue.fm/archives/11980">
+<meta name="viz:author" content="苏剑林（科学空间）">
+<meta name="viz:date" content="2026-10-20">
+<meta name="viz:tags" content="Attention,Transformer,连续化">
+<!-- KaTeX：优先本地 _lib，失败时 viz-core 自动回退 CDN -->
+<link rel="stylesheet" href="../_lib/katex/katex.min.css">
+<script src="../_lib/katex/katex.min.js"></script>
+<script src="../_lib/katex/contrib/auto-render.min.js"></script>
+<style>
+/* ==== viz-core.css（内联快照，勿手改；页面专属样式写在下方） ==== */
+/* viz-core.css — uKnowViz 共享样式 v1
+ * 语义配色：颜色代表“角色”而不是装饰，全站一致（见 references/style-guide.md）
+ */
+:root{
+  --bg:#0e1120; --panel:#161a2e; --panel2:#1d2240; --line:#2a3058;
+  --text:#e6e8f2; --muted:#9aa0bf; --dim:#646a8c;
+  --new:#b197fc;     /* 文章提出的新方法 / 主角 */
+  --base:#69db7c;    /* 基线 / 标准做法 / 正确 ✓ */
+  --pa:#f59f4c;      /* 一分为二时的 A 部分（左 / 第一项） */
+  --pb:#4dabf7;      /* 一分为二时的 B 部分（右 / 第二项） */
+  --approx:#ffd43b;  /* 近似值 / 辅助量 / 输入数据 */
+  --warn:#ff8787;    /* 负面结果 / 误差 / 警告 */
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--text);
+  font-family:"PingFang SC","Microsoft YaHei","Noto Sans SC",system-ui,sans-serif;line-height:1.7}
+a{color:var(--pb)}
+b,strong{color:#fff}
+
+/* ---------- 页首 / 导航 / 页脚 ---------- */
+header.hero{padding:56px 24px 32px;text-align:center;
+  background:radial-gradient(ellipse at top,#262d5c 0%,var(--bg) 70%)}
+header.hero h1{font-size:2.2rem;margin:0 0 8px;letter-spacing:.04em}
+header.hero p{color:var(--muted);margin:4px 0}
+header.hero .src{font-size:.85rem}
+nav.toc{position:sticky;top:0;z-index:10;background:rgba(14,17,32,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line);display:flex;gap:4px;justify-content:center;flex-wrap:wrap;padding:8px}
+nav.toc a{color:var(--muted);text-decoration:none;font-size:.88rem;padding:4px 10px;border-radius:6px}
+nav.toc a:hover{background:var(--panel2);color:var(--text)}
+main{max-width:1080px;margin:0 auto;padding:12px 20px 80px}
+footer{color:var(--dim);text-align:center;font-size:.85rem;padding:30px}
+
+/* ---------- 章节 ---------- */
+section{margin:44px 0;scroll-margin-top:56px}
+h2{font-size:1.45rem;border-left:4px solid var(--new);padding-left:12px;margin:0 0 14px}
+h2 .num{color:var(--new);margin-right:8px}
+h3{font-size:1.1rem;margin:10px 0 6px;color:#fff}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px 20px;margin:14px 0}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+@media(max-width:820px){.grid2,.grid3{grid-template-columns:1fr}}
+
+/* ---------- 画布与控件 ---------- */
+canvas{width:100%;display:block;border-radius:10px;background:#11152a}
+canvas.clickable{cursor:pointer}
+.cap{color:var(--muted);font-size:.85rem;text-align:center;margin:2px 0}
+.controls{display:flex;flex-wrap:wrap;gap:10px 18px;align-items:center;margin:12px 0 4px;font-size:.92rem}
+.controls label{display:flex;align-items:center;gap:8px;color:var(--muted)}
+.controls input[type=range]{width:150px;accent-color:var(--new)}
+.controls select{background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:3px 6px}
+button{background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:8px;
+  padding:6px 14px;cursor:pointer;font-size:.9rem;font-family:inherit}
+button:hover{border-color:var(--new)}
+button.primary{background:var(--new);color:#14112a;border:none;font-weight:600}
+.val{font-family:Consolas,Menlo,monospace;color:var(--text);min-width:3.5em;display:inline-block}
+
+/* 图例：<span><i class="sw new"></i>说明</span> */
+.legend{display:flex;flex-wrap:wrap;gap:14px;font-size:.85rem;color:var(--muted);margin-top:8px}
+.legend i{display:inline-block;width:12px;height:12px;border-radius:3px;margin-right:6px;vertical-align:-1px}
+.sw.new{background:var(--new)} .sw.base{background:var(--base)} .sw.pa{background:var(--pa)}
+.sw.pb{background:var(--pb)} .sw.approx{background:var(--approx)} .sw.warn{background:var(--warn)}
+.sw.text{background:var(--text)} .sw.dashed{background:none;border:2px dashed var(--base)}
+
+/* 实时数值读数 */
+.readout{font-family:Consolas,Menlo,monospace;font-size:.88rem;background:#0f1326;border-radius:8px;
+  padding:10px 12px;margin-top:10px;white-space:pre-wrap;color:#cfd3ee;overflow-x:auto}
+.readout b{color:var(--new)}
+.ok{color:var(--base)} .bad{color:var(--warn)}
+
+/* ---------- 文字层 ---------- */
+.note{color:var(--muted);font-size:.92rem}
+.key{background:linear-gradient(90deg,rgba(177,151,252,.14),rgba(77,171,247,.06));
+  border:1px solid rgba(177,151,252,.35);border-radius:12px;padding:12px 16px;margin:12px 0}
+.plain{background:linear-gradient(135deg,rgba(105,219,124,.10),rgba(255,212,59,.06));
+  border:1px solid rgba(105,219,124,.35);border-radius:12px;padding:12px 18px 12px 16px;margin:12px 0;font-size:.97rem}
+.plain::before{content:"🧒 通俗地说";display:block;font-weight:700;color:var(--base);margin-bottom:4px}
+.plain.how::before{content:"👀 怎么看这张图";color:var(--approx)}
+.plain ul,.plain ol{margin:4px 0;padding-left:1.3em}
+.schematic-note{color:var(--muted);font-size:.88rem}
+.schematic-note::before{content:"⚠️ 示意图：";color:var(--warn);font-weight:600}
+
+/* 三联比喻卡 */
+.analogy{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:10px 0}
+@media(max-width:820px){.analogy{grid-template-columns:1fr}}
+.analogy>div{background:var(--panel2);border-radius:10px;padding:12px 14px}
+.analogy .ico{font-size:1.8rem}
+.analogy b{color:var(--new)}
+
+/* 实验卡 */
+.tag{display:inline-block;font-size:.75rem;padding:1px 8px;border-radius:99px;border:1px solid var(--line);color:var(--muted)}
+.stat{font-size:2rem;font-weight:700;color:var(--new)}
+
+/* 表格 / 术语表 */
+table{border-collapse:collapse;width:100%;font-size:.9rem}
+td,th{border-bottom:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+th{color:var(--muted);font-weight:500}
+dl.gloss{display:grid;grid-template-columns:170px 1fr;gap:8px 14px;margin:0}
+dl.gloss dt{color:var(--new);font-weight:600}
+dl.gloss dd{margin:0;color:#cfd3ee}
+@media(max-width:820px){dl.gloss{grid-template-columns:1fr}}
+
+/* 公式分步展开器（VIZ.stepper） */
+.stepper .step{padding:6px 10px;border-left:3px solid transparent;border-radius:6px;margin:4px 0;transition:all .35s}
+.stepper .step.cur{border-left-color:var(--new);background:rgba(177,151,252,.08)}
+.stepper .step.hidden{display:none}
+.stepper .step .why{color:var(--muted);font-size:.9rem;margin-left:4px}
+.katex-display{overflow-x:auto;overflow-y:hidden;padding:4px 0}
+
+/* 运行时错误横幅（VIZ 捕获的 JS 错误，便于自检） */
+#viz-errors{position:fixed;bottom:0;left:0;right:0;background:#5c1a1a;color:#fff;font:12px Consolas,monospace;
+  padding:6px 12px;z-index:99;white-space:pre-wrap;display:none}
+
+/* ---------- 首页索引 ---------- */
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:16px}
+.cards a.item{display:block;text-decoration:none;color:var(--text);background:var(--panel);border:1px solid var(--line);
+  border-radius:14px;padding:16px 18px;transition:border-color .2s,transform .2s}
+.cards a.item:hover{border-color:var(--new);transform:translateY(-2px)}
+.cards .item h3{margin:0 0 6px;color:#fff}
+.cards .item p{margin:0 0 8px;color:var(--muted);font-size:.9rem}
+.cards .item .meta{font-size:.78rem;color:var(--dim)}
+/* ==== 页面专属样式 ==== */
+</style>
+</head>
+<body>
+<header class="hero">
+  <h1>连续化 Softmax Attention</h1>
+  <p>把“对有限个向量做加权平均”变成“对一条连续曲线求积分”，再重新离散化——会得到什么？</p>
+  <p class="src">解读自 苏剑林（科学空间）《<a href="https://kexue.fm/archives/11980" target="_blank">连续化 Softmax Attention</a>》</p>
+</header>
+<nav class="toc">
+  <a href="#s0">⓪ 大白话版</a><a href="#s1">① 问题</a><a href="#s2">② 单段积分</a><a href="#s3">③ φ 函数</a>
+  <a href="#s4">④ 组装</a><a href="#s5">⑤ 注意力矩阵</a><a href="#s6">⑥ Short Conv</a>
+  <a href="#s7">⑦ 实验</a><a href="#s8">⑧ 小结</a><a href="#s9">📖 术语表</a>
+</nav>
+<main>
+
+<!-- ================= 0 ================= -->
+<section id="s0">
+  <h2><span class="num">⓪</span>先用大白话理解：这篇文章在讲什么？</h2>
+  <div class="card">
+    <p><b>Attention（注意力）</b>是 ChatGPT 这类大模型的核心零件。它解决的问题是：读到某个词时，应该“回头看”前面哪些词、各看多少？</p>
+    <div class="analogy">
+      <div><div class="ico">🔍</div><b>Query（查询）</b><br>当前这个词提出的“问题”。<br>比如读到“它”，问的是：“它”指谁？</div>
+      <div><div class="ico">🏷️</div><b>Key（标签）</b><br>前面每个词身上贴的“标签”。<br>问题和标签越匹配，打分 $a_i$ 越高。</div>
+      <div><div class="ico">📦</div><b>Value（内容）</b><br>每个词真正携带的信息。<br>最后按分数比例把内容“混合”起来。</div>
+    </div>
+    <p><b>Softmax</b> 就是把分数变成“注意力份额”的规则：先取 $e^{a_i}$（让高分更突出），再除以总和，使所有份额加起来正好等于 100%。这好比按得分把一块蛋糕分给几个人。</p>
+
+    <div class="plain">
+      <p style="margin-top:0">普通的注意力只关心<b>一个个独立的词</b>，就像只在 1 号、2 号、3 号……这些“站点”上收集信息。</p>
+      <p>这篇文章换了个想法：如果把相邻站点之间<b>用直线连起来</b>，假设信息在两个词之间是“渐变”的，那么注意力就不再是一根根柱子，而是一条连绵的“山脉”。这时就不用“把柱子加起来”，而是去<b>算山脉下面的面积</b>（也就是积分）。</p>
+      <p>这就叫<b>“连续化”</b>。数学上把积分算出来、再还原成能在电脑上计算的形式，叫<b>“重新离散化”</b>。</p>
+    </div>
+
+    <div class="key">
+      <b>🎯 一句话结论：</b>连续化之后，结果<b>仍然是普通的 Softmax 注意力</b>，只是每个词的分数会参考<b>左右邻居</b>的分数，自动做一点“平滑”：太突出的被削低一点，被冷落的被抬高一点。这相当于给注意力加了一个“模糊滤镜”，业内叫 <b>Short Conv（短卷积）</b>。<br>
+      <b>📉 实验结果：</b>训练初期确实学得更快，但最后和普通版本打平，而且计算速度只有原来的约 1/4。所以它目前更像一个<b>“数学上很漂亮”的发现</b>，而不是实用的改进。
+    </div>
+    <p class="note">下面的章节带你一步步看这个结论是怎么来的。每一节都有一个 🧒“通俗地说”框，看不懂公式的话，只看这些框和动画也能明白大意。</p>
+  </div>
+</section>
+
+<!-- ================= 1 ================= -->
+<section id="s1">
+  <h2><span class="num">①</span>问题：把求和换成积分</h2>
+  <div class="grid2">
+    <div class="card">
+      <p>标准 Softmax Attention 只在整数位置 $i=1,\dots,t$ 上取值：</p>
+      $$\boldsymbol{o}_t = \frac{\sum_{i=1}^t e^{\boldsymbol{q}_t\cdot\boldsymbol{k}_i} \boldsymbol{v}_i}{\sum_{i=1}^t e^{\boldsymbol{q}_t\cdot\boldsymbol{k}_i}}$$
+      <p>连续化版本把它改成在 $[0,t]$ 上的积分：</p>
+      $$\boldsymbol{o}_t = \frac{\int_0^t e^{\boldsymbol{q}_t\cdot\boldsymbol{k}_s} \boldsymbol{v}_s\, ds}{\int_0^t e^{\boldsymbol{q}_t\cdot\boldsymbol{k}_s}\, ds}$$
+    </div>
+    <div class="card">
+      <p>非整数点的 $\boldsymbol{k}_s,\boldsymbol{v}_s$ 用<b>线性插值</b>定义，对 $s\in[i-1,i]$：</p>
+      $$\boldsymbol{k}_s = (i - s)\boldsymbol{k}_{i-1} + (s - i + 1) \boldsymbol{k}_i$$
+      <p>$\boldsymbol{v}_s$ 同理。为了让 $[0,1]$ 这一段有定义，需要额外引入 $\boldsymbol{k}_0,\boldsymbol{v}_0$（类似一个 Sink token）。</p>
+      <p class="note">关键观察：$\boldsymbol{k}_s$ 对 $s$ 线性 ⇒ 分数 $a_s=\boldsymbol{q}_t\cdot\boldsymbol{k}_s$ 也对 $s$ 线性 ⇒ 每一段上 $e^{a_s}$ 都是一段<b>指数曲线</b>，可以精确积分。</p>
+    </div>
+  </div>
+  <div class="card">
+    <canvas id="c1" style="height:330px"></canvas>
+    <div class="controls">
+      <button class="primary" id="b1play">▶ 播放：离散 → 连续</button>
+      <label>形变 <input type="range" id="r1m" min="0" max="1" step="0.001" value="0"><span class="val" id="v1m">0</span></label>
+      <button id="b1rand">🎲 随机分数</button>
+    </div>
+    <div class="legend">
+      <span><i class="sw base"></i>标准：只在整数点有权重 $e^{a_i}$</span>
+      <span><i class="sw new"></i>连续化：$e^{a_s}$ 曲线下的面积（$a_s$ 分段线性）</span>
+      <span><i class="sw approx"></i>$v_s$（以标量演示，右侧坐标）</span>
+    </div>
+    <div class="readout" id="o1"></div>
+    <div class="plain how">
+      <ul>
+        <li><b>绿色柱子</b>：普通注意力。每个位置一根柱子，柱子越高，越受关注。</li>
+        <li>点 <b>▶ 播放</b>：柱子逐渐消失，换成一条<b>紫色山脉</b>。山脉在每个整数位置正好经过柱顶，柱子之间则平滑过渡。</li>
+        <li><b>黄色折线</b>是每个位置携带的“内容”$v$（这里用一个数代替一个向量），它也被连成了折线。</li>
+        <li>最后的输出 $o_t$ = “内容 × 关注度”的总面积 ÷ 山脉总面积，相当于<b>按面积加权的平均值</b>。</li>
+      </ul>
+    </div>
+    <div class="plain">
+      想象你坐火车，只在 1、2、3…号站停靠拍照，这是普通注意力。连续化则是<b>全程开着摄像机</b>，站与站之间的风景也被记录下来（用直线“脑补”）。最后统计“看到了什么”时，不再只数照片，而是看整段录像。
+      下方读数中“数值积分”和“闭式解”几乎完全一样，说明后文推出的公式是对的。
+    </div>
+  </div>
+</section>
+
+<!-- ================= 2 ================= -->
+<section id="s2">
+  <h2><span class="num">②</span>单段积分：一段面积如何“分给”两个端点</h2>
+  <div class="card">
+    <p>记 $a_{t,i} = \boldsymbol{q}_t\cdot\boldsymbol{k}_i$，$\delta_{t,i}=a_{t,i}-a_{t,i-1}$。在第 $i$ 段上，把 $s$ 平移到 $[0,1]$：</p>
+    $$e^{a_s}\boldsymbol{v}_s = \underbrace{e^{a_{i-1}+s\delta}(1-s)}_{\color{#f59f4c}\text{给 }\boldsymbol{v}_{i-1}}\,\boldsymbol{v}_{i-1} + \underbrace{e^{a_{i-1}+s\delta}\, s}_{\color{#4dabf7}\text{给 }\boldsymbol{v}_{i}}\,\boldsymbol{v}_{i}$$
+    <p>也就是说，曲线 $e^{a_s}$ 下的面积被权重 $(1-s)$ 与 $s$ <b>切成两块</b>（下图橙色与蓝色），分别积分得到：</p>
+    $$\int_{i-1}^i e^{a_s} \boldsymbol{v}_s ds = {\color{#f59f4c}e^{a_{i-1}}\varphi_2(\delta)}\,\boldsymbol{v}_{i-1} + {\color{#4dabf7}e^{a_{i}}\varphi_2(-\delta)}\,\boldsymbol{v}_{i},\qquad \int_{i-1}^i e^{a_s} ds = e^{a_{i-1}}\varphi_1(\delta)$$
+    <canvas id="c2" style="height:320px"></canvas>
+    <div class="controls">
+      <label>$a_{i-1}$ <input type="range" id="r2l" min="-2.5" max="2.5" step="0.01" value="-0.5"><span class="val" data-for="r2l"></span></label>
+      <label>$a_{i}$ <input type="range" id="r2r" min="-2.5" max="2.5" step="0.01" value="1.5"><span class="val" data-for="r2r"></span></label>
+      <button id="b2eq">令 $\delta=0$</button>
+    </div>
+    <div class="readout" id="o2"></div>
+    <div class="key">💡 当 $\delta=0$（相邻两个分数相同）时，两块面积各占一半 —— 这正是<b>梯形求积公式</b>；$\delta\ne 0$ 时，分数更高的那一端会“抢走”更多面积。</div>
+    <div class="plain">
+      只看相邻两个位置之间的这一小段山坡。这块面积最后要“还”给两个端点，问题是各还多少？
+      <ul>
+        <li>规则很直观：<b>离谁近就归谁</b>。靠近左端的部分大多归左边（橙色），靠近右端的部分大多归右边（蓝色）。</li>
+        <li>如果两端一样高（点“令 δ=0”），就正好<b>对半分</b>。这和小学学的梯形面积公式“(上底+下底)×高÷2”是一回事。</li>
+        <li>如果一端更高，山坡在那一侧更“胖”，那一端就<b>分得更多</b>。拖动滑块试试，右边的柱子会显示分配比例。</li>
+      </ul>
+      就像两个村子之间有一片农田，按“离哪个村更近”来划分归属，地势更高（更肥沃）的那一侧收获更多。
+    </div>
+  </div>
+</section>
+
+<!-- ================= 3 ================= -->
+<section id="s3">
+  <h2><span class="num">③</span>两个辅助函数 $\varphi_1,\varphi_2$</h2>
+  <div class="grid2">
+    <div class="card">
+      $$\varphi_1(x) \triangleq \int_0^1 e^{s x} ds = \frac{e^x - 1}{x}$$
+      $$\varphi_2(x) \triangleq \int_0^1 e^{s x} (1-s) ds = \frac{e^x - 1 - x}{x^2}$$
+      <p>$x=0$ 处取极限：$\varphi_1(0)=1,\ \varphi_2(0)=\tfrac12$。由积分定义可知二者<b>恒正</b>，后面取对数不会出问题。</p>
+      <p>关键恒等式（把 $\boldsymbol{v}_i$ 的系数改写成以 $e^{a_i}$ 为基准）：</p>
+      $$\varphi_1(x) - \varphi_2(x) = e^x \varphi_2(-x)$$
+      <p class="note">含义：$\int_0^1 e^{sx}s\,ds$（蓝色那块）从右端点看过去，就是把 $x$ 反号后的 $\varphi_2$，再乘以 $e^x$。</p>
+    </div>
+    <div class="card">
+      <canvas id="c3" style="height:300px"></canvas>
+      <div class="controls">
+        <label>$x$ <input type="range" id="r3x" min="-4" max="4" step="0.01" value="1.2"><span class="val" data-for="r3x"></span></label>
+      </div>
+      <div class="legend">
+        <span><i class="sw new"></i>$\varphi_1(x)$</span>
+        <span><i class="sw pa"></i>$\varphi_2(x)$</span>
+        <span><i class="sw pb"></i>$e^x\varphi_2(-x)$</span>
+        <span><i class="sw text" style="opacity:.6"></i>$\varphi_1-\varphi_2$（虚线，与蓝线重合）</span>
+      </div>
+      <div class="readout" id="o3"></div>
+    </div>
+  </div>
+  <div class="plain">
+    $\varphi_1$ 和 $\varphi_2$ 不神秘，它们只是两个<b>“记账工具”</b>：
+    <ul>
+      <li>$\varphi_1$ 算的是上一节那一整段山坡的<b>总面积</b>（以左端高度为单位）。</li>
+      <li>$\varphi_2$ 算的是其中<b>分给左端点的那一块</b>（橙色）。</li>
+      <li>恒等式 $\varphi_1-\varphi_2=e^x\varphi_2(-x)$ 的意思是：总面积减去橙色，就是蓝色；而<b>蓝色从右端点看过去，和橙色是同一种形状</b>，只是方向反过来。所以一个 $\varphi_2$ 就能同时描述左右两份。</li>
+    </ul>
+    不用记公式，只需记住两点：它们<b>永远是正数</b>；两端一样高时，$\varphi_1=1$（整块），$\varphi_2=\tfrac12$（一半）。
+  </div>
+</section>
+
+<!-- ================= 4 ================= -->
+<section id="s4">
+  <h2><span class="num">④</span>组装：每个端点收集左右两段送来的面积</h2>
+  <div class="card">
+    <p>把所有段的结果加起来并按 $\boldsymbol{v}_i$ 合并同类项。点 $i$ 会从<b>左边那段</b>收到蓝色份额 $e^{a_i}\varphi_2(-\delta_i)$，从<b>右边那段</b>收到橙色份额 $e^{a_i}\varphi_2(\delta_{i+1})$：</p>
+    $$\text{分子}= \sum_{i=0}^t e^{a_{t,i} + b_{t,i}} \boldsymbol{v}_i,\qquad e^{b_{t,i}} = \left\{\begin{aligned}
+      &\varphi_2(a_{t,1} - a_{t,0}) && i = 0 \\
+      &\varphi_2(a_{t,i-1} - a_{t,i}) + \varphi_2(a_{t,i+1} - a_{t,i}) && 1\leq i\leq t-1 \\
+      &\varphi_2(a_{t,t-1} - a_{t,t}) && i = t
+    \end{aligned}\right.$$
+    <p>分母就是把所有 $\boldsymbol{v}_i$ 换成 $1$，于是最终仍然是一个 Softmax：</p>
+    $$\boxed{\ \boldsymbol{o}_t = \frac{\sum_{i=0}^t e^{a_{t,i} + b_{t,i}} \boldsymbol{v}_i}{\sum_{i=0}^t e^{a_{t,i} + b_{t,i}}}\ }$$
+    <div id="st4" class="card" style="background:var(--panel2)"></div>
+    <canvas id="c4" style="height:460px"></canvas>
+    <div class="controls">
+      <button class="primary" id="b4play">▶ 播放组装动画</button>
+      <label>进度 <input type="range" id="r4p" min="0" max="1" step="0.001" value="0"><span class="val" id="v4p"></span></label>
+      <button id="b4rand">🎲 随机分数</button>
+    </div>
+    <div class="legend">
+      <span><i class="sw pa"></i>橙：段的左份额 → 左端点</span>
+      <span><i class="sw pb"></i>蓝：段的右份额 → 右端点</span>
+      <span><i class="sw dashed"></i>虚线框：标准 Softmax 的权重 $e^{a_i}$</span>
+    </div>
+    <div class="readout" id="o4"></div>
+    <div class="plain how">
+      <ul>
+        <li><b>上半部分</b>：整条山脉被切成若干段，每段都分成橙、蓝两块。</li>
+        <li>点 <b>▶ 播放</b>：每段的橙色块飞向<b>左边</b>的端点，蓝色块飞向<b>右边</b>的端点，在下半部分堆成柱子。</li>
+        <li><b>绿色虚线框</b>是普通注意力给这个位置的权重，可以和堆出来的柱子比一比。</li>
+      </ul>
+    </div>
+    <div class="plain">
+      每个位置都从<b>左右两块农田</b>各收一份粮食，加起来就是它最终的“关注度”。
+      <ul>
+        <li>和普通注意力相比，相当于给每个位置的分数乘了一个<b>修正系数</b> $e^{b_i}$。</li>
+        <li>这个系数由“<b>我和邻居谁高谁低</b>”决定：邻居比我高，我能多分一点；邻居比我低，我会少一点。</li>
+        <li>第一个和最后一个位置只有一侧有邻居，只能收到一份，所以大约<b>只有一半</b>（$b\approx\log\frac12$）。</li>
+      </ul>
+      最妙的是，最后的公式<b>还是 Softmax 的样子</b>，只是分数从 $a_i$ 变成了 $a_i+b_i$。这意味着它很容易“塞进”现有的模型里。
+    </div>
+  </div>
+</section>
+
+<!-- ================= 5 ================= -->
+<section id="s5">
+  <h2><span class="num">⑤</span>注意力矩阵对比：标准 vs 连续化</h2>
+  <div class="card">
+    <p>随机生成 $\boldsymbol{q}_t,\boldsymbol{k}_i\in\mathbb{R}^{d}$，计算完整的因果注意力矩阵。连续化版本多出第 0 列（$\boldsymbol{k}_0,\boldsymbol{v}_0$），每个分数被加上了依赖<b>左右邻居</b>的修正 $b_{t,i}$。<b>点击任一行</b>查看该行权重分布。</p>
+    <div class="grid3">
+      <div><div class="note" style="text-align:center">标准 Softmax $P_{t,i}$</div><canvas id="c5a" style="height:270px"></canvas></div>
+      <div><div class="note" style="text-align:center">连续化 Softmax</div><canvas id="c5b" style="height:270px"></canvas></div>
+      <div><div class="note" style="text-align:center">修正项 $b_{t,i}$（红正 蓝负）</div><canvas id="c5c" style="height:270px"></canvas></div>
+    </div>
+    <div class="controls">
+      <label>分数尺度 $\tau$ <input type="range" id="r5s" min="0.2" max="4" step="0.05" value="1.6"><span class="val" data-for="r5s"></span></label>
+      <label>$\boldsymbol{k}_0,\boldsymbol{v}_0$ <select id="s5k0"><option value="zero">全零（作者实验选择）</option><option value="copy">复制 $\boldsymbol{k}_1,\boldsymbol{v}_1$</option></select></label>
+      <label>K 的相邻相关性 <select id="s5corr"><option value="0">独立随机</option><option value="0.85">平滑（类时间序列）</option></select></label>
+      <button id="b5rand">🎲 重新采样</button>
+    </div>
+    <canvas id="c5d" style="height:240px;margin-top:10px"></canvas>
+    <div class="legend">
+      <span><i class="sw base"></i>标准 Softmax</span>
+      <span><i class="sw new"></i>连续化（精确 $b$）</span>
+      <span><i class="sw approx"></i>连续化（$b$ 用二阶差分/6 近似）</span>
+    </div>
+    <div class="readout" id="o5"></div>
+    <div class="plain how">
+      <ul>
+        <li>每张热力图里，<b>每一行</b>是一个正在读的词（第 $t$ 个），<b>每一格</b>表示它对前面第 $i$ 个词的关注度。<b>越亮越关注</b>，右上角的黑色区域是“未来”，不能偷看。</li>
+        <li>对比左边两张图：连续化版本的亮点更“晕开”一些，尖锐的亮格变暗，旁边的格子变亮。</li>
+        <li>第三张图是修正量 $b$：<b>红色</b>表示被加分（通常是比邻居低的“山谷”），<b>蓝色</b>表示被减分（比邻居高的“山峰”，以及首尾两列）。</li>
+        <li>下方柱状图是选中那一行的详细对比。<b>黄线</b>是用“简单平滑公式”估算的结果，和紫色柱几乎重合，说明下一节的近似很准。</li>
+      </ul>
+      试试把“分数尺度”调大：分数差距越大，连续化的修正越明显。
+    </div>
+  </div>
+</section>
+
+<!-- ================= 6 ================= -->
+<section id="s6">
+  <h2><span class="num">⑥</span>$b_{t,i}$ 本质上是一个 Short Conv</h2>
+  <div class="grid2">
+    <div class="card">
+      <p>对内部点做泰勒展开（$\varphi_2(x)=\tfrac12+\tfrac{x}{6}+\tfrac{x^2}{24}+\cdots$）：</p>
+      $$b_{t,i} = \log \big(\varphi_2(a_{t,i-1} - a_{t,i}) + \varphi_2(a_{t,i+1} - a_{t,i})\big) = \frac{a_{t,i-1} + a_{t,i+1} - 2a_{t,i}}{6} + \cdots$$
+      <p>$a_{t,i-1} + a_{t,i+1} - 2a_{t,i}$ 正是二阶差分，即沿 $i$ 方向用核 $[\tfrac16,-\tfrac13,\tfrac16]$ 做的卷积。于是</p>
+      $$a_{t,i}+b_{t,i}\approx \tfrac16 a_{t,i-1}+\tfrac23 a_{t,i}+\tfrac16 a_{t,i+1}$$
+      <p>——连续化 ≈ <b>给 Attention 分数矩阵沿 key 方向做了一次平滑的 Short Conv</b>。而两个端点 $i=0,t$ 只有一侧邻居，大约只拿到 $\log\frac12$，对应梯形公式端点的半权重。</p>
+    </div>
+    <div class="card">
+      <canvas id="c6" style="height:300px"></canvas>
+      <div class="controls">
+        <label>$a_{i-1}$ <input type="range" id="r6a" min="-3" max="3" step="0.01" value="0.4"><span class="val" data-for="r6a"></span></label>
+        <label>$a_{i}$ <input type="range" id="r6b" min="-3" max="3" step="0.01" value="2.0"><span class="val" data-for="r6b"></span></label>
+        <label>$a_{i+1}$ <input type="range" id="r6c" min="-3" max="3" step="0.01" value="-0.6"><span class="val" data-for="r6c"></span></label>
+      </div>
+      <div class="readout" id="o6"></div>
+    </div>
+  </div>
+  <div class="plain">
+    这就像手机修图里的<b>“模糊/柔化滤镜”</b>：每个像素都和左右邻居按 $\tfrac16:\tfrac23:\tfrac16$ 的比例取平均，结果是<b>尖的变钝，凹的变满</b>。
+    <ul>
+      <li>拖动上面三个滑块，把中间的 $a_i$ 调得比两边高：紫色柱（修正后）会比原来<b>矮</b>。</li>
+      <li>把中间调得比两边低：修正后反而会<b>变高</b>。</li>
+    </ul>
+    “Short Conv（短卷积）”正是这种“只看左右几个邻居”的小滤镜，它是近几年很多新模型（如 Mamba 等线性注意力类模型）里常用的小技巧。<b>这篇文章的有趣之处在于：没人刻意设计它，只是“把求和改成积分”，这个滤镜就自己冒出来了。</b>
+  </div>
+</section>
+
+<!-- ================= 7 ================= -->
+<section id="s7">
+  <h2><span class="num">⑦</span>作者的简单实验</h2>
+  <div class="grid3">
+    <div class="card">
+      <span class="tag">效率</span>
+      <div class="stat">≈ 1/4</div>
+      <p>$b_{t,i}$ 依赖相邻分数，<b>无法直接复用 Flash Attention</b>。理论 FLOPs 基本一致，但作者让 K3 写的 Kernel 中细碎运算太多，速度只有标准 Softmax Attention 的约 1/4。</p>
+    </div>
+    <div class="card">
+      <span class="tag">位置编码</span>
+      <div class="stat">仍需 RoPE</div>
+      <p>连续化引入了局域先验，但<b>不能替代位置编码</b>：全 Full Attention 架构下，不加 RoPE 的连续化版本明显差于“标准 + RoPE”；加上 RoPE 后差距被追回。</p>
+    </div>
+    <div class="card">
+      <span class="tag">训练动态</span>
+      <div class="stat">先优后平</div>
+      <p>都加 RoPE 时，连续化前期明显更好，但差距逐渐缩窄，训练结束时两者基本重合。中途从标准版切换到连续化，起跳 Loss 不高，最终收敛到与标准版基本一致。</p>
+    </div>
+  </div>
+  <div class="card">
+    <canvas id="c7" style="height:280px"></canvas>
+    <div class="controls"><button class="primary" id="b7play">▶ 播放训练曲线</button></div>
+    <p class="schematic-note">上图是根据文中文字描述绘制的<b>定性示意图</b>，并非原文数据。作者推测：自然语言并非真正的时间序列，连续化带不来实质好处；在真正的时间序列任务上或许才能测出优势。</p>
+  </div>
+  <div class="plain">
+    一句话：<b>理论漂亮，实战打平</b>。
+    <ul>
+      <li><b>为什么慢？</b> 现在的大模型靠一个叫 Flash Attention 的“加速引擎”跑得飞快，但它只认标准公式。新公式要额外看邻居，引擎用不上，只能手写，于是慢了约 4 倍。</li>
+      <li><b>为什么还要 RoPE（位置编码）？</b> 连续化只让模型知道“谁和谁相邻”，却不知道“隔了多远”“谁在前谁在后”。这些仍然要靠位置编码提供。</li>
+      <li><b>为什么最终没优势？</b> 连续化默认两个词之间存在“渐变的中间状态”。温度、股价这类数据确实如此，但语言不是：在“苹果”和“跑步”之间，并不存在一个“一半苹果一半跑步”的词。前期它像一副“辅助轮”帮模型起步，等模型学会了，辅助轮就没用了。</li>
+    </ul>
+  </div>
+</section>
+
+<!-- ================= 8 ================= -->
+<section id="s8">
+  <h2><span class="num">⑧</span>小结</h2>
+  <div class="card">
+    <table>
+      <tr><th style="width:24%">步骤</th><th>做了什么</th><th style="width:34%">得到什么</th></tr>
+      <tr><td>连续化</td><td>$\sum_i \to \int_0^t ds$；$\boldsymbol{k},\boldsymbol{v}$ 线性插值；补 $\boldsymbol{k}_0,\boldsymbol{v}_0$</td><td>每段 $e^{a_s}$ 为指数曲线，可精确积分</td></tr>
+      <tr><td>分段积分</td><td>按 $(1-s)$、$s$ 把每段面积切给左右端点</td><td>$\varphi_1,\varphi_2$ 与恒等式 $\varphi_1-\varphi_2=e^x\varphi_2(-x)$</td></tr>
+      <tr><td>重新离散化</td><td>按 $\boldsymbol{v}_i$ 合并同类项</td><td>仍是 Softmax，分数变为 $a_{t,i}+b_{t,i}$</td></tr>
+      <tr><td>解读</td><td>对 $b_{t,i}$ 泰勒展开</td><td>≈ 二阶差分/6 ⇒ 注意力矩阵上的 Short Conv；$\boldsymbol{k}_0,\boldsymbol{v}_0$ ≈ Sink token</td></tr>
+      <tr><td>实验</td><td>语言模型预训练</td><td>前期更快、最终持平；需 RoPE；速度约 1/4</td></tr>
+    </table>
+    <div class="key">“连续化 → 离散化”是一条屡试不爽的探索路径（SSM、EFLA 皆如此）。对 Softmax Attention 而言，它重新推出了一个漂亮的结论：<b>连续化 Softmax Attention ≈ 给 Attention 矩阵加 Short Conv</b>。在自然语言上虽未见收益，但仍是一个值得赏析的结果。</div>
+    <div class="plain">
+      <b>用三句话讲给朋友听：</b>
+      <ol style="margin:4px 0;padding-left:1.4em">
+        <li>大模型读文字时，会给前面每个词打分，再按分数“分配注意力”。</li>
+        <li>如果假设词与词之间是平滑过渡的，用“算面积”代替“数柱子”，推导出来的新规则等于：<b>每个词的分数先和左右邻居平均一下，再分配注意力</b>。</li>
+        <li>这个想法让模型起步更快，但最终效果和原来一样，还更慢。它的价值在于揭示了“连续化”和“短卷积”这两个看似无关的东西其实是相通的。</li>
+      </ol>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 9 ================= -->
+<section id="s9">
+  <h2><span class="num">📖</span>术语表</h2>
+  <div class="card">
+    <dl class="gloss">
+      <dt>Attention 注意力</dt><dd>模型在处理当前词时，决定“回头看”哪些词、各看多少的机制。</dd>
+      <dt>Query / Key / Value</dt><dd>问题 / 标签 / 内容。用问题匹配标签得到分数，再按分数混合内容。</dd>
+      <dt>Softmax</dt><dd>把一组任意分数变成加起来为 100% 的份额：先取指数，再除以总和。高分会被放大。</dd>
+      <dt>注意力矩阵</dt><dd>把“每个词对每个前面的词的关注度”排成的表格，第 5 节的热力图就是它。</dd>
+      <dt>Causal 因果</dt><dd>只能看前面、不能看后面的词（生成文字时还不知道未来）。</dd>
+      <dt>线性插值</dt><dd>在两个已知点之间连一条直线，用来“猜”中间的值。</dd>
+      <dt>积分</dt><dd>求曲线下方的面积，可以看成“连续版本的求和”。</dd>
+      <dt>连续化 / 离散化</dt><dd>把一个个点变成连续的线 / 再把连续的结果写回按点计算的公式。</dd>
+      <dt>泰勒展开</dt><dd>用简单的多项式近似复杂的函数，只保留最主要的项，便于看清本质。</dd>
+      <dt>二阶差分</dt><dd>$a_{i-1}+a_{i+1}-2a_i$：衡量一个点比左右邻居“凸出”或“凹陷”了多少。</dd>
+      <dt>Short Conv 短卷积</dt><dd>只用相邻几个位置做加权平均的小滤镜，类似图片的模糊滤镜。</dd>
+      <dt>Sink token</dt><dd>在序列开头额外放的一个“空位”，让注意力在没什么可看时有地方“停靠”。这里的 $\boldsymbol{k}_0,\boldsymbol{v}_0$ 起类似作用。</dd>
+      <dt>RoPE 位置编码</dt><dd>告诉模型每个词在第几个位置、彼此相距多远的方法（旋转位置编码）。</dd>
+      <dt>Flash Attention</dt><dd>一种高度优化的注意力计算程序，速度快、省显存，但只支持标准公式。</dd>
+      <dt>SSM / EFLA</dt><dd>同样采用“先连续化、再离散化”思路设计出来的其他序列模型。</dd>
+    </dl>
+  </div>
+</section>
+</main>
+<footer>可视化解读 · 原文：<a href="https://kexue.fm/archives/11980" target="_blank">https://kexue.fm/archives/11980</a> · 页面中的数值均为实时计算 · <a href="../index.html">← 返回目录</a></footer>
+
+<script>
+/* ==== viz-core.js（内联快照，勿手改） ==== */
+/* viz-core.js — uKnowViz 共享可视化运行时 v1
+ * 无依赖（KaTeX 可选）。全部挂在全局 VIZ 上。API 说明见 references/components.md
+ *
+ *  数学      VIZ.clamp lerp linspace sum softmax logsumexp randn rng fmt fmtE integrate ease
+ *  颜色      VIZ.C（从 CSS 变量读取） VIZ.alpha(hex,a) VIZ.cmap.seq(u) VIZ.cmap.div(x,m)
+ *  画布      VIZ.plot(canvas, opts) → Plot（坐标映射 + 轴 + 线/面/柱/点/箭头/文字）
+ *            VIZ.heatmap(canvas, M, opts)
+ *  动画      VIZ.animate(ms, onFrame, onDone) VIZ.player({...})
+ *  控件      VIZ.slider(id, cb, digits) VIZ.num(id) VIZ.readout(id, html) VIZ.$(id)
+ *  组件      VIZ.stepper(el, steps) VIZ.schematic(canvas, opts)
+ *  生命周期  VIZ.onReady(fn) VIZ.onRender(fn) VIZ.redraw() VIZ.start()
+ */
+(function (global) {
+  'use strict';
+  const VIZ = {};
+  const $ = id => (typeof id === 'string' ? document.getElementById(id) : id);
+  VIZ.$ = $;
+
+  /* ============ 数学 ============ */
+  VIZ.clamp = (x, a, b) => Math.max(a, Math.min(b, x));
+  VIZ.lerp = (a, b, u) => a + (b - a) * u;
+  VIZ.linspace = (a, b, n) => Array.from({ length: n }, (_, i) => a + (b - a) * i / (n - 1));
+  VIZ.sum = arr => arr.reduce((s, x) => s + x, 0);
+  VIZ.logsumexp = arr => {
+    const f = arr.filter(Number.isFinite); if (!f.length) return -Infinity;
+    const m = Math.max(...f); return m + Math.log(VIZ.sum(f.map(x => Math.exp(x - m))));
+  };
+  /** softmax，-Infinity 视为被 mask（权重 0） */
+  VIZ.softmax = arr => {
+    const lse = VIZ.logsumexp(arr);
+    return arr.map(x => (Number.isFinite(x) ? Math.exp(x - lse) : 0));
+  };
+  /** 可复现随机数：const r = VIZ.rng(42); r() ∈ [0,1) */
+  VIZ.rng = seed => {
+    let a = (seed >>> 0) || 1;
+    return () => { a |= 0; a = (a + 0x6D2B79F5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+  };
+  /** 标准正态；可传入 VIZ.rng 生成器以复现 */
+  VIZ.randn = (r = Math.random) => {
+    let u = 0, v = 0; while (!u) u = r(); while (!v) v = r();
+    return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+  };
+  /** 定宽数字：正数前补空格，使读数列对齐 */
+  VIZ.fmt = (x, n = 4) => (!Number.isFinite(x) ? String(x) : (x >= 0 ? ' ' : '') + x.toFixed(n));
+  VIZ.fmtE = (x, n = 1) => x.toExponential(n);
+  /** 数值积分（复合 Simpson，n 取偶数），用于在页面上核对闭式解 */
+  VIZ.integrate = (f, a, b, n = 2000) => {
+    if (n % 2) n++; const h = (b - a) / n; let s = f(a) + f(b);
+    for (let i = 1; i < n; i++) s += f(a + i * h) * (i % 2 ? 4 : 2);
+    return s * h / 3;
+  };
+  VIZ.ease = {
+    inOut: u => (u < .5 ? 2 * u * u : 1 - Math.pow(-2 * u + 2, 2) / 2),
+    out: u => 1 - Math.pow(1 - u, 3),
+    linear: u => u,
+  };
+
+  /* ============ 颜色 ============ */
+  VIZ.C = {};
+  function loadPalette() {
+    const cs = getComputedStyle(document.documentElement);
+    ['bg', 'panel', 'panel2', 'line', 'text', 'muted', 'dim', 'new', 'base', 'pa', 'pb', 'approx', 'warn']
+      .forEach(k => { VIZ.C[k] = cs.getPropertyValue('--' + k).trim(); });
+  }
+  /** '#rgb' / '#rrggbb' → rgba 字符串 */
+  VIZ.alpha = (hex, a) => {
+    let h = hex.replace('#', ''); if (h.length === 3) h = h.split('').map(c => c + c).join('');
+    const n = parseInt(h, 16); return `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},${a})`;
+  };
+  const SEQ = [[13, 8, 135], [84, 2, 163], [139, 10, 165], [185, 50, 137], [219, 92, 104], [244, 136, 73], [254, 188, 43], [240, 249, 33]];
+  VIZ.cmap = {
+    /** 顺序色带（plasma 近似），u∈[0,1] */
+    seq(u) {
+      u = VIZ.clamp(u, 0, 1) * (SEQ.length - 1); const i = Math.floor(u), f = u - i;
+      const c0 = SEQ[i], c1 = SEQ[Math.min(i + 1, SEQ.length - 1)];
+      return `rgb(${c0.map((c, k) => Math.round(c + (c1[k] - c) * f)).join(',')})`;
+    },
+    /** 发散色带：负→蓝，0→深底色，正→红；m 为饱和值 */
+    div(x, m = 1) {
+      const u = VIZ.clamp(x / m, -1, 1);
+      return u >= 0 ? `rgb(${Math.round(30 + 225 * u)},${Math.round(34 + 30 * u)},${Math.round(64 + 10 * u)})`
+        : `rgb(${Math.round(30 - 10 * u)},${Math.round(34 - 100 * u)},${Math.round(64 - 180 * u)})`;
+    },
+  };
+
+  /* ============ 画布 ============ */
+  /** HiDPI 适配；每次重绘前调用（同时清空画布） */
+  VIZ.setup = cv => {
+    cv = $(cv);
+    const dpr = global.devicePixelRatio || 1, w = cv.clientWidth, h = cv.clientHeight;
+    cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr);
+    const ctx = cv.getContext('2d'); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.font = '12px Consolas, Menlo, monospace'; ctx.lineJoin = 'round';
+    return { ctx, w, h, cv };
+  };
+
+  class Plot {
+    /**
+     * opts.x=[x0,x1], opts.y=[y0,y1]   数据坐标范围
+     * opts.m={l,r,t,b}                 边距(px)
+     * opts.equal=true                  等比例（旋转、几何图）
+     * opts.box=[px0,py0,px1,py1]       只占画布的一部分（上下分栏时用）
+     * opts.keep=true                   不清空画布，在同一画布上叠加第二个坐标系（双 y 轴 / 分栏）
+     */
+    constructor(cv, opts = {}) {
+      const el = $(cv);
+      Object.assign(this, opts.keep ? { ctx: el.getContext('2d'), w: el.clientWidth, h: el.clientHeight, cv: el } : VIZ.setup(el));
+      const m = Object.assign({ l: 46, r: 16, t: 16, b: 30 }, opts.m || {});
+      const box = opts.box || [0, 0, this.w, this.h];
+      this.L = box[0] + m.l; this.R = box[2] - m.r; this.T = box[1] + m.t; this.B = box[3] - m.b;
+      this.x = (opts.x || [0, 1]).slice(); this.y = (opts.y || [0, 1]).slice();
+      if (opts.equal) {
+        const sx = (this.R - this.L) / (this.x[1] - this.x[0]), sy = (this.B - this.T) / (this.y[1] - this.y[0]);
+        const s = Math.min(sx, sy), cx = (this.x[0] + this.x[1]) / 2, cy = (this.y[0] + this.y[1]) / 2;
+        const hw = (this.R - this.L) / s / 2, hh = (this.B - this.T) / s / 2;
+        this.x = [cx - hw, cx + hw]; this.y = [cy - hh, cy + hh];
+      }
+    }
+    X(v) { return this.L + (this.R - this.L) * (v - this.x[0]) / (this.x[1] - this.x[0]); }
+    Y(v) { return this.B - (this.B - this.T) * (v - this.y[0]) / (this.y[1] - this.y[0]); }
+    /** 像素长度 ↔ 数据长度 */
+    sx(d) { return d * (this.R - this.L) / (this.x[1] - this.x[0]); }
+    sy(d) { return d * (this.B - this.T) / (this.y[1] - this.y[0]); }
+    _style(o, defColor) {
+      const c = this.ctx; c.strokeStyle = o.color || defColor || VIZ.C.text; c.lineWidth = o.width || 2;
+      c.setLineDash(o.dash || []); c.globalAlpha = o.alpha == null ? 1 : o.alpha;
+    }
+    _reset() { this.ctx.setLineDash([]); this.ctx.globalAlpha = 1; }
+    /** 坐标轴。o.xTicks/yTicks: 数组或 'auto'；o.xFmt/yFmt: 刻度文字格式（o.tickFmt 同时作用于两轴）；
+     *  o.xLabel/yLabel；o.grid；o.zero（画 y=0 / x=0 线） */
+    axes(o = {}) {
+      const c = this.ctx, C = VIZ.C;
+      const ticks = (t, r) => (t === 'auto' ? niceTicks(r[0], r[1], 5) : t || []);
+      const xt = ticks(o.xTicks, this.x), yt = ticks(o.yTicks, this.y);
+      c.strokeStyle = C.line; c.lineWidth = 1;
+      if (o.grid) {
+        c.globalAlpha = .45;
+        xt.forEach(v => { c.beginPath(); c.moveTo(this.X(v), this.T); c.lineTo(this.X(v), this.B); c.stroke(); });
+        yt.forEach(v => { c.beginPath(); c.moveTo(this.L, this.Y(v)); c.lineTo(this.R, this.Y(v)); c.stroke(); });
+        c.globalAlpha = 1;
+      }
+      c.beginPath(); c.moveTo(this.L, this.T); c.lineTo(this.L, this.B); c.lineTo(this.R, this.B); c.stroke();
+      if (o.zero) {
+        c.setLineDash([3, 4]);
+        if (this.y[0] < 0 && this.y[1] > 0) { c.beginPath(); c.moveTo(this.L, this.Y(0)); c.lineTo(this.R, this.Y(0)); c.stroke(); }
+        if (this.x[0] < 0 && this.x[1] > 0) { c.beginPath(); c.moveTo(this.X(0), this.T); c.lineTo(this.X(0), this.B); c.stroke(); }
+        c.setLineDash([]);
+      }
+      c.fillStyle = C.muted; c.textAlign = 'center'; c.textBaseline = 'alphabetic';
+      const def = v => +v.toFixed(3), xf = o.xFmt || o.tickFmt || def, yf = o.yFmt || o.tickFmt || def;
+      xt.forEach(v => c.fillText(xf(v), this.X(v), this.B + 16));
+      c.textAlign = 'right'; yt.forEach(v => c.fillText(yf(v), this.L - 6, this.Y(v) + 4));
+      if (o.xLabel) { c.textAlign = 'right'; c.fillText(o.xLabel, this.R, this.B - 6); }
+      if (o.yLabel) { c.textAlign = 'left'; c.fillText(o.yLabel, this.L + 6, this.T + 10); }
+      return this;
+    }
+    /** 函数曲线 y=f(x)。o.from/o.to/o.n/o.color/o.width/o.dash/o.clip(默认 true：超出 y 范围截断) */
+    fn(f, o = {}) {
+      const a = o.from ?? this.x[0], b = o.to ?? this.x[1], n = o.n || 300;
+      const pts = []; for (let i = 0; i <= n; i++) { const x = a + (b - a) * i / n; pts.push([x, f(x)]); }
+      return this.path(pts, o);
+    }
+    /** 折线（数据坐标点数组 [[x,y],...]） */
+    path(pts, o = {}) {
+      const c = this.ctx, clip = o.clip !== false; this._style(o, VIZ.C.new);
+      if (clip) { c.save(); c.beginPath(); c.rect(this.L, this.T - 2, this.R - this.L, this.B - this.T + 4); c.clip(); }
+      c.beginPath(); let started = false;
+      for (const [x, y] of pts) {
+        if (!Number.isFinite(y)) { started = false; continue; }
+        const px = this.X(x), py = this.Y(y); started ? c.lineTo(px, py) : c.moveTo(px, py); started = true;
+      }
+      c.stroke(); if (clip) c.restore(); this._reset(); return this;
+    }
+    /** 两曲线间填色：f 上沿，g 下沿（默认 0）。o.fill/o.from/o.to */
+    area(f, g = 0, o = {}) {
+      const c = this.ctx, a = o.from ?? this.x[0], b = o.to ?? this.x[1], n = o.n || 200;
+      const gf = typeof g === 'function' ? g : () => g;
+      c.beginPath();
+      for (let i = 0; i <= n; i++) { const x = a + (b - a) * i / n; const p = [this.X(x), this.Y(f(x))]; i ? c.lineTo(...p) : c.moveTo(...p); }
+      for (let i = n; i >= 0; i--) { const x = a + (b - a) * i / n; c.lineTo(this.X(x), this.Y(gf(x))); }
+      c.closePath(); c.fillStyle = o.fill || VIZ.alpha(VIZ.C.new, .3); c.fill(); return this;
+    }
+    /** 竖直柱：中心 x，高度 h（数据单位），o.w 像素宽，o.base 底部，o.fill/o.stroke/o.dash/o.label */
+    bar(x, h, o = {}) {
+      const c = this.ctx, w = o.w || 14, base = o.base || 0;
+      const x0 = this.X(x) - w / 2 + (o.dx || 0), y0 = this.Y(base + Math.max(h, 0)), y1 = this.Y(base + Math.min(h, 0));
+      if (o.fill !== null) { c.fillStyle = o.fill || VIZ.alpha(VIZ.C.base, .85); c.fillRect(x0, y0, w, y1 - y0); }
+      if (o.stroke) { c.strokeStyle = o.stroke; c.lineWidth = o.lineWidth || 1.5; c.setLineDash(o.dash || []); c.strokeRect(x0, y0, w, y1 - y0); c.setLineDash([]); }
+      if (o.label != null) { c.fillStyle = o.labelColor || VIZ.C.muted; c.textAlign = 'center'; c.fillText(o.label, x0 + w / 2, h >= 0 ? y0 - 4 : y1 + 12); }
+      return this;
+    }
+    dot(x, y, o = {}) {
+      const c = this.ctx; c.fillStyle = o.color || VIZ.C.text; c.globalAlpha = o.alpha ?? 1;
+      c.beginPath(); c.arc(this.X(x), this.Y(y), o.r || 4, 0, Math.PI * 2); c.fill(); c.globalAlpha = 1; return this;
+    }
+    /** 箭头（数据坐标），向量/梯度/旋转演示用 */
+    arrow(x0, y0, x1, y1, o = {}) {
+      const c = this.ctx, p0 = [this.X(x0), this.Y(y0)], p1 = [this.X(x1), this.Y(y1)];
+      const ang = Math.atan2(p1[1] - p0[1], p1[0] - p0[0]), hs = o.head || 9;
+      this._style(o, VIZ.C.text); c.beginPath(); c.moveTo(...p0); c.lineTo(...p1); c.stroke(); this._reset();
+      c.fillStyle = o.color || VIZ.C.text; c.beginPath(); c.moveTo(...p1);
+      c.lineTo(p1[0] - hs * Math.cos(ang - .4), p1[1] - hs * Math.sin(ang - .4));
+      c.lineTo(p1[0] - hs * Math.cos(ang + .4), p1[1] - hs * Math.sin(ang + .4)); c.closePath(); c.fill();
+      if (o.label) { c.textAlign = 'left'; c.fillText(o.label, p1[0] + 6, p1[1] - 6); }
+      return this;
+    }
+    vline(x, o = {}) { return this.path([[x, this.y[0]], [x, this.y[1]]], Object.assign({ color: VIZ.C.dim, width: 1, dash: [3, 4] }, o)); }
+    hline(y, o = {}) { return this.path([[this.x[0], y], [this.x[1], y]], Object.assign({ color: VIZ.C.dim, width: 1, dash: [3, 4] }, o)); }
+    /** 文字（数据坐标）。o.px=true 时 x,y 为像素坐标；o.align/o.color/o.size/o.bold */
+    text(s, x, y, o = {}) {
+      const c = this.ctx; c.fillStyle = o.color || VIZ.C.muted; c.textAlign = o.align || 'center';
+      if (o.size || o.bold) c.font = `${o.bold ? 'bold ' : ''}${o.size || 12}px Consolas, Menlo, "Microsoft YaHei", monospace`;
+      c.fillText(s, o.px ? x : this.X(x), o.px ? y : this.Y(y));
+      c.font = '12px Consolas, Menlo, monospace'; return this;
+    }
+  }
+  function niceTicks(a, b, n) {
+    const span = b - a, step0 = span / n, mag = Math.pow(10, Math.floor(Math.log10(step0)));
+    const step = [1, 2, 5, 10].map(k => k * mag).find(s => span / s <= n) || 10 * mag;
+    const out = []; for (let v = Math.ceil(a / step) * step; v <= b + 1e-9; v += step) out.push(+v.toFixed(10)); return out;
+  }
+  VIZ.niceTicks = niceTicks;
+  VIZ.Plot = Plot;
+  VIZ.plot = (cv, opts) => new Plot(cv, opts);
+
+  /**
+   * 热力图。M 为二维数组（行×列）。
+   * opts.color(v,r,c) → css 颜色（默认 seq(√v)）
+   * opts.mask(r,c) → true 表示不可见（如因果遮罩）
+   * opts.highlightRow / highlightCol：白框高亮
+   * opts.onClick({r,c})：点击回调（自动绑定一次）
+   * opts.rowLabel/colLabel：轴说明；opts.values=true 时在格子里写数值
+   */
+  VIZ.heatmap = (cv, M, opts = {}) => {
+    const { ctx, w, h } = VIZ.setup(cv); cv = $(cv);
+    const R = M.length, Cn = Math.max(...M.map(r => r.length)), pad = opts.pad ?? 22;
+    const cs = Math.min((w - pad - 6) / Cn, (h - pad - 8) / R), ox = pad + ((w - pad - 6) - cs * Cn) / 2, oy = 4;
+    const color = opts.color || (v => VIZ.cmap.seq(Math.sqrt(Math.max(0, v))));
+    for (let r = 0; r < R; r++) for (let c = 0; c < Cn; c++) {
+      const x = ox + c * cs, y = oy + r * cs, v = M[r][c];
+      ctx.fillStyle = (opts.mask && opts.mask(r, c)) || v == null ? '#0b0e1c' : color(v, r, c);
+      ctx.fillRect(x, y, cs - 1, cs - 1);
+      if (opts.values && v != null && !(opts.mask && opts.mask(r, c)) && cs > 22) {
+        ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.font = '10px Consolas';
+        ctx.fillText(typeof opts.values === 'function' ? opts.values(v) : v.toFixed(2), x + cs / 2, y + cs / 2 + 3);
+      }
+    }
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
+    if (opts.highlightRow != null) ctx.strokeRect(ox - 1, oy + opts.highlightRow * cs - 1, Cn * cs + 1, cs + 1);
+    if (opts.highlightCol != null) ctx.strokeRect(ox + opts.highlightCol * cs - 1, oy - 1, cs + 1, R * cs + 1);
+    ctx.fillStyle = VIZ.C.muted; ctx.textAlign = 'center'; ctx.font = '10px Consolas';
+    if (opts.colLabel) ctx.fillText(opts.colLabel, ox + Cn * cs / 2, oy + R * cs + 14);
+    if (opts.rowLabel) { ctx.save(); ctx.translate(10, oy + R * cs / 2); ctx.rotate(-Math.PI / 2); ctx.fillText(opts.rowLabel, 0, 0); ctx.restore(); }
+    cv._vizHeat = { ox, oy, cs, R, Cn, onClick: opts.onClick };
+    if (opts.onClick) { cv.classList.add('clickable'); }
+    if (!cv._vizHeatBound) {
+      cv._vizHeatBound = true;
+      cv.addEventListener('click', e => {
+        const g = cv._vizHeat; if (!g || !g.onClick) return; const b = cv.getBoundingClientRect();
+        const c = Math.floor((e.clientX - b.left - g.ox) / g.cs), r = Math.floor((e.clientY - b.top - g.oy) / g.cs);
+        if (r >= 0 && r < g.R && c >= 0 && c < g.Cn) g.onClick({ r, c });
+      });
+    }
+    return cv._vizHeat;
+  };
+
+  /* ============ 动画 ============ */
+  /** 跑一段 ms 毫秒的动画，onFrame(u∈[0,1])；返回取消函数 */
+  VIZ.animate = (ms, onFrame, onDone) => {
+    let stop = false; const t0 = performance.now();
+    const step = now => { if (stop) return; const u = Math.min(1, (now - t0) / ms); onFrame(u); u < 1 ? requestAnimationFrame(step) : onDone && onDone(); };
+    requestAnimationFrame(step); return () => { stop = true; };
+  };
+  /**
+   * 播放器：把「播放按钮 + 进度滑块 + 数值标签」绑定成一个可拖动、可播放的时间轴。
+   * VIZ.player({ button:'id', range:'id', label:'id'(可选), ms:2500, from:0(可选，从头播放的起点), onUpdate:u=>draw(u) })
+   * 返回 { set(u), play(), get() }。滑块需 min=0 max=1 step=0.001。
+   */
+  VIZ.player = o => {
+    let u = 0, cancel = null; const btn = $(o.button), rg = $(o.range), lb = o.label && $(o.label);
+    const txt = btn ? btn.textContent : '';
+    const set = v => { u = v; if (rg) rg.value = v; if (lb) lb.textContent = Math.round(v * 100) + '%'; o.onUpdate(v); };
+    const stopIt = () => { if (cancel) cancel(); cancel = null; if (btn) btn.textContent = txt; };
+    const play = () => {
+      if (cancel) { stopIt(); return; }
+      const start = u >= 1 ? (o.from || 0) : u; if (btn) btn.textContent = '⏸ 暂停';
+      cancel = VIZ.animate(o.ms * (1 - start), k => set(start + (1 - start) * k), stopIt);
+    };
+    if (btn) btn.addEventListener('click', play);
+    if (rg) rg.addEventListener('input', e => { stopIt(); set(+e.target.value); });
+    return { set, play, get: () => u };
+  };
+
+  /* ============ 控件 ============ */
+  VIZ.num = id => +$(id).value;
+  /**
+   * 绑定滑块：自动更新 <span class="val" data-for="id"> 的显示，并在 input 时调用 cb(value)。
+   * 不会立刻调用 cb（首帧由 VIZ.onRender 统一绘制）。
+   */
+  VIZ.slider = (id, cb, digits = 2) => {
+    const el = $(id), out = document.querySelector(`.val[data-for="${id}"]`);
+    const show = () => { if (out) out.textContent = (+el.value).toFixed(digits); };
+    el.addEventListener('input', () => { show(); cb && cb(+el.value); }); show();
+    return el;
+  };
+  VIZ.readout = (id, html) => { $(id).innerHTML = html; };
+
+  /* ============ 组件 ============ */
+  /**
+   * 公式分步展开器：逐行显示推导，每步一句“为什么”。
+   * steps: [{tex:'...LaTeX...', why:'这一步做了什么'}]
+   * 容器内自动生成 ◀ ▶ 按钮；需要 KaTeX。
+   */
+  VIZ.stepper = (el, steps, opts = {}) => {
+    el = $(el); el.classList.add('stepper'); el.innerHTML = '';
+    const rows = steps.map(s => {
+      const d = document.createElement('div'); d.className = 'step hidden';
+      const m = document.createElement('div');
+      try { global.katex.render(s.tex, m, { displayMode: true, throwOnError: false }); } catch (e) { m.textContent = s.tex; }
+      d.appendChild(m);
+      if (s.why) { const w = document.createElement('div'); w.className = 'why'; w.innerHTML = '↳ ' + s.why; d.appendChild(w); }
+      el.appendChild(d); return d;
+    });
+    const bar = document.createElement('div'); bar.className = 'controls';
+    bar.innerHTML = `<button data-a="prev">◀ 上一步</button><button class="primary" data-a="next">下一步 ▶</button><button data-a="all">全部展开</button><span class="note"></span>`;
+    el.appendChild(bar);
+    let k = opts.start ?? 0;
+    const show = () => {
+      rows.forEach((r, i) => { r.classList.toggle('hidden', i > k); r.classList.toggle('cur', i === k); });
+      bar.querySelector('.note').textContent = `第 ${k + 1} / ${rows.length} 步`;
+      opts.onStep && opts.onStep(k);
+    };
+    bar.addEventListener('click', e => {
+      const a = e.target.dataset.a; if (!a) return;
+      if (a === 'prev') k = Math.max(0, k - 1); if (a === 'next') k = Math.min(rows.length - 1, k + 1); if (a === 'all') k = rows.length - 1;
+      show();
+    });
+    show(); return { go: i => { k = i; show(); } };
+  };
+
+  /**
+   * 示意曲线（原文没有给数据时使用），永远带“示意图，非原文数据”水印。
+   * opts: { curves:[{name,color,f,dash}], progress:0..1, x:[0,1], y:[lo,hi], xLabel, yLabel, marks:[{x,label}] }
+   */
+  VIZ.schematic = (cv, o) => {
+    const legendW = 150, p = VIZ.plot(cv, { x: o.x || [0, 1], y: o.y, m: { l: 40, r: legendW, t: 16, b: 30 } });
+    p.axes({ xLabel: o.xLabel, yLabel: o.yLabel });
+    const prog = o.progress ?? 1, [x0, x1] = p.x;
+    (o.marks || []).forEach(m => { if ((m.x - x0) / (x1 - x0) <= prog) { p.vline(m.x); p.text(m.label, m.x, p.y[1], { color: VIZ.C.dim }); } });
+    o.curves.forEach((cv_, k) => {
+      p.fn(cv_.f, { color: cv_.color, dash: cv_.dash, width: 2.2, to: x0 + (x1 - x0) * prog });
+      const c = p.ctx; c.fillStyle = cv_.color; c.fillRect(p.R + 16, p.T + 8 + k * 22, 14, 3);
+      c.textAlign = 'left'; c.fillText(cv_.name, p.R + 36, p.T + 13 + k * 22);
+    });
+    p.text('示意图，非原文数据', p.R - 4, p.B - 8, { px: true, align: 'right', color: VIZ.C.warn });
+    return p;
+  };
+
+  /* ============ 生命周期 ============ */
+  const renders = [], readies = [];
+  /** 注册绘制函数：启动时、窗口缩放时自动重绘 */
+  VIZ.onRender = fn => { renders.push(fn); return fn; };
+  /** 注册一次性初始化（KaTeX 就绪后、首次绘制前执行；VIZ.stepper 应放在这里创建） */
+  VIZ.onReady = fn => { readies.push(fn); return fn; };
+  VIZ.redraw = () => renders.forEach(fn => { try { fn(); } catch (e) { reportError(e); } });
+
+  const KATEX_CDN = 'https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/';
+  function loadScript(src) {
+    return new Promise((ok, fail) => { const s = document.createElement('script'); s.src = src; s.onload = ok; s.onerror = fail; document.head.appendChild(s); });
+  }
+  /** 本地 _lib/katex 加载失败时自动回退 CDN */
+  async function ensureKatex() {
+    if (global.katex && global.renderMathInElement) return true;
+    try {
+      const l = document.createElement('link'); l.rel = 'stylesheet'; l.href = KATEX_CDN + 'katex.min.css'; document.head.appendChild(l);
+      if (!global.katex) await loadScript(KATEX_CDN + 'katex.min.js');
+      if (!global.renderMathInElement) await loadScript(KATEX_CDN + 'contrib/auto-render.min.js');
+      return true;
+    } catch (e) { reportError(new Error('KaTeX 加载失败：公式将以源码显示')); return false; }
+  }
+  function reportError(e) {
+    const msg = (e && (e.message || e.reason || e)) + '';
+    const root = document.documentElement; root.dataset.vizErrors = ((root.dataset.vizErrors || '') + msg + ' | ').slice(0, 2000);
+    let bar = document.getElementById('viz-errors');
+    if (!bar && document.body) { bar = document.createElement('div'); bar.id = 'viz-errors'; document.body.appendChild(bar); }
+    if (bar) { bar.style.display = 'block'; bar.textContent += '⚠ ' + msg + '\n'; }
+    console.error(e);
+  }
+  global.addEventListener('error', e => reportError(e.error || e.message));
+  global.addEventListener('unhandledrejection', e => reportError(e.reason));
+
+  /** 页面脚本最后调用：渲染公式 → 读取配色 → 首次绘制 → 监听缩放 */
+  VIZ.start = () => {
+    const go = async () => {
+      loadPalette();
+      if (await ensureKatex()) {
+        global.renderMathInElement(document.body, {
+          delimiters: [{ left: '$$', right: '$$', display: true }, { left: '$', right: '$', display: false }],
+          throwOnError: false, ignoredClasses: ['readout', 'no-math'],
+        });
+      }
+      readies.forEach(fn => { try { fn(); } catch (e) { reportError(e); } });
+      VIZ.redraw();
+      document.documentElement.dataset.vizReady = '1';
+    };
+    document.readyState === 'loading' ? document.addEventListener('DOMContentLoaded', go) : go();
+    let t; global.addEventListener('resize', () => { clearTimeout(t); t = setTimeout(VIZ.redraw, 120); });
+  };
+
+  global.VIZ = VIZ;
+})(window);
+</script>
+<script>
+/* ==== 页面脚本 ==== */
+'use strict';
+const { $, C, fmt } = VIZ;
+
+/* ---------- 文章中的数学 ---------- */
+const phi1 = x => (Math.abs(x) < 1e-6 ? 1 + x / 2 : Math.expm1(x) / x);
+const phi2 = x => (Math.abs(x) < 1e-3 ? 0.5 + x / 6 + x * x / 24 : (Math.expm1(x) - x) / (x * x));
+/** a: 分数 a_0..a_t → 修正项 b_0..b_t */
+function corrections(a) {
+  const t = a.length - 1;
+  return a.map((ai, i) => Math.log((i > 0 ? phi2(a[i - 1] - ai) : 0) + (i < t ? phi2(a[i + 1] - ai) : 0)));
+}
+/** 分段线性插值：arr[0..T] 在 s∈[0,T] 处的值 */
+const interp = (arr, s) => { const i = VIZ.clamp(Math.ceil(s), 1, arr.length - 1), u = s - (i - 1); return (1 - u) * arr[i - 1] + u * arr[i]; };
+
+/* ================= ① 离散 → 连续 ================= */
+const S1 = { T: 6, a: [], v: [], m: 0 };
+function rand1() {
+  S1.a = [0]; S1.v = [0];                       // k_0 = 0 ⇒ a_0 = 0；v_0 = 0
+  for (let i = 1; i <= S1.T; i++) { S1.a.push(+(VIZ.randn() * 0.9).toFixed(2)); S1.v.push(+VIZ.randn().toFixed(2)); }
+}
+const draw1 = VIZ.onRender(() => {
+  const { T, a, v, m } = S1, ticks = VIZ.linspace(0, T, T + 1);
+  const p = VIZ.plot('c1', { x: [0, T], y: [0, Math.max(...a.map(Math.exp)) * 1.12], m: { l: 46, r: 46 } })
+    .axes({ xTicks: ticks, yTicks: 'auto', xLabel: 's', yLabel: 'e^(a_s)' });
+  const vMax = Math.max(1, ...v.map(Math.abs)) * 1.15;
+  const pv = VIZ.plot('c1', { keep: true, x: [0, T], y: [-vMax, vMax], m: { l: 46, r: 46 } });   // 右侧 v 轴
+  pv.hline(0, { color: VIZ.alpha(C.approx, .25) }).text('v_s', pv.R + 22, pv.T + 6, { px: true, color: C.approx });
+
+  const sweep = T * Math.min(1, m * 1.25), ea = s => Math.exp(interp(a, s));
+  if (sweep > 0) {
+    p.area(ea, 0, { to: sweep, n: 400, fill: VIZ.alpha(C.new, .28) }).fn(ea, { to: sweep, n: 400, color: C.new, width: 2.2 });
+    pv.fn(s => interp(v, s), { to: sweep, color: VIZ.alpha(C.approx, .8), width: 1.5 });
+  }
+  const fade = Math.max(0, 1 - m * 1.6), bw = Math.min(22, p.sx(1) * 0.25);
+  for (let i = 1; i <= T; i++) p.bar(i, Math.exp(a[i]), { w: bw, fill: VIZ.alpha(C.base, .2 + .65 * fade) });
+  for (let i = 0; i <= T; i++) { p.dot(i, Math.exp(a[i]), { r: 3.5, color: i ? C.text : C.dim }); pv.dot(i, v[i], { r: 3, color: C.approx }); }
+  p.text('k₀=0, v₀=0', p.X(0) + 36, p.Y(1) - 10, { px: true, color: C.dim });
+
+  // 三种算法的输出对比：标准 / 数值积分 / 闭式解
+  let ns = 0, ds = 0; for (let i = 1; i <= T; i++) { ns += Math.exp(a[i]) * v[i]; ds += Math.exp(a[i]); }
+  const b = corrections(a); let nc = 0, dc = 0;
+  for (let i = 0; i <= T; i++) { const e = Math.exp(a[i] + b[i]); nc += e * v[i]; dc += e; }
+  let ni = 0, di = 0;
+  for (let j = 1; j <= T; j++) { ni += VIZ.integrate(s => ea(s) * interp(v, s), j - 1, j, 200); di += VIZ.integrate(ea, j - 1, j, 200); }
+  VIZ.readout('o1',
+`a_i = [${a.map(x => x.toFixed(2)).join(', ')}]     v_i = [${v.map(x => x.toFixed(2)).join(', ')}]
+标准 Softmax         o_t = ${fmt(ns / ds)}
+连续化（数值积分）    o_t = ${fmt(ni / di)}
+连续化（闭式解 ④）    o_t = <b>${fmt(nc / dc)}</b>   <span class="ok">✓ 与数值积分一致，误差 ${VIZ.fmtE(Math.abs(nc / dc - ni / di))}</span>`);
+});
+VIZ.player({ button: 'b1play', range: 'r1m', label: 'v1m', ms: 2600, onUpdate: u => { S1.m = u; draw1(); } });
+$('b1rand').onclick = () => { rand1(); draw1(); };
+
+/* ================= ② 单段面积切分 ================= */
+const draw2 = VIZ.onRender(() => {
+  const aL = VIZ.num('r2l'), aR = VIZ.num('r2r'), d = aR - aL, f = s => Math.exp(aL + s * d), left = s => f(s) * (1 - s);
+  const p = VIZ.plot('c2', { x: [0, 1], y: [0, Math.exp(Math.max(aL, aR)) * 1.15], m: { l: 50, r: 220, b: 30 } })
+    .axes({ xTicks: [0, 1], yTicks: 'auto', tickFmt: v => (v === 0 ? 'i−1' : v === 1 ? 'i' : +v.toFixed(2)) });
+  p.area(left, 0, { fill: VIZ.alpha(C.pa, .65) }).area(f, left, { fill: VIZ.alpha(C.pb, .6) }).fn(f, { color: C.new, width: 2.5 });
+  p.text('e^(a_s)', p.X(.5), p.Y(f(.5)) - 10, { px: true, color: C.text });
+
+  const A1 = Math.exp(aL) * phi2(d), A2 = Math.exp(aR) * phi2(-d), tot = Math.exp(aL) * phi1(d);
+  const q = VIZ.plot('c2', { keep: true, x: [0, 1], y: [0, tot * 1.15], box: [p.R + 30, 0, p.w, p.h], m: { l: 10, r: 110, t: 16, b: 30 } });
+  q.bar(.4, A1, { w: 44, fill: VIZ.alpha(C.pa, .85) }).bar(.4, A2, { w: 44, base: A1, fill: VIZ.alpha(C.pb, .85) })
+   .bar(.4, tot, { w: 44, fill: null, stroke: C.new });
+  q.text(`→ v_{i-1} ${(A1 / tot * 100).toFixed(0)}%`, q.X(.4) + 28, q.Y(A1 / 2) + 4, { px: true, align: 'left', color: C.pa });
+  q.text(`→ v_i ${(A2 / tot * 100).toFixed(0)}%`, q.X(.4) + 28, q.Y(A1 + A2 / 2) + 4, { px: true, align: 'left', color: C.pb });
+  q.text('面积分解', q.X(.4), q.B + 18, { px: true });
+
+  const n1 = VIZ.integrate(left, 0, 1), n2 = VIZ.integrate(s => f(s) * s, 0, 1);
+  VIZ.readout('o2',
+`δ = a_i − a_{i−1} = ${fmt(d, 2)}
+<span style="color:var(--pa)">橙</span> e^{a_{i−1}}·φ₂(δ)  = ${fmt(A1)}   （数值积分 ${fmt(n1)}）
+<span style="color:var(--pb)">蓝</span> e^{a_i}·φ₂(−δ)    = ${fmt(A2)}   （数值积分 ${fmt(n2)}）
+总  e^{a_{i−1}}·φ₁(δ) = ${fmt(tot)}   = 橙 + 蓝 ${Math.abs(A1 + A2 - tot) < 1e-9 ? '<span class="ok">✓</span>' : '<span class="bad">✗</span>'}`);
+});
+VIZ.slider('r2l', draw2); VIZ.slider('r2r', draw2);
+$('b2eq').onclick = () => { $('r2r').value = $('r2l').value; $('r2r').dispatchEvent(new Event('input')); };
+
+/* ================= ③ φ 函数 ================= */
+const draw3 = VIZ.onRender(() => {
+  const x0 = VIZ.num('r3x'), mirror = x => Math.exp(x) * phi2(-x);
+  const p = VIZ.plot('c3', { x: [-4, 4], y: [0, 5], m: { l: 36, r: 12, t: 12, b: 28 } })
+    .axes({ xTicks: [-4, -2, 0, 2, 4], yTicks: [1, 2, 3, 4, 5], zero: true });
+  p.fn(phi1, { color: C.new, width: 2.2 }).fn(phi2, { color: C.pa, width: 2.2 }).fn(mirror, { color: C.pb, width: 4 })
+   .fn(x => phi1(x) - phi2(x), { color: 'rgba(255,255,255,.8)', width: 1.4, dash: [5, 5] }).vline(x0);
+  [[phi1(x0), C.new], [phi2(x0), C.pa], [mirror(x0), C.pb]].forEach(([y, c]) => { if (y <= 5.2) p.dot(x0, y, { color: c, r: 4.5 }); });
+  VIZ.readout('o3',
+`φ₁(${x0.toFixed(2)}) = ${fmt(phi1(x0))}     φ₂(${x0.toFixed(2)}) = ${fmt(phi2(x0))}
+φ₁ − φ₂       = ${fmt(phi1(x0) - phi2(x0))}
+e^x · φ₂(−x)  = ${fmt(mirror(x0))}   <span class="ok">✓ 恒等式成立</span>`);
+});
+VIZ.slider('r3x', draw3);
+
+/* ================= ④ 组装 ================= */
+VIZ.onReady(() => VIZ.stepper('st4', [
+  { tex: String.raw`\text{分子}=\sum_{i=1}^t e^{a_{t,i-1}}\varphi_1(\delta_{t,i}) \boldsymbol{v}_i + e^{a_{t,i-1}}\varphi_2(\delta_{t,i}) (\boldsymbol{v}_{i-1} - \boldsymbol{v}_i)`,
+    why: '把每一段的积分结果（第 ② 节）加起来' },
+  { tex: String.raw`=\sum_{i=1}^t e^{a_{t,i-1}}\big(\varphi_1(\delta_{t,i})-\varphi_2(\delta_{t,i})\big)\boldsymbol{v}_i + e^{a_{t,i-1}}\varphi_2(\delta_{t,i}) \boldsymbol{v}_{i-1}`,
+    why: '按 v_i 和 v_{i-1} 分别整理系数' },
+  { tex: String.raw`=\sum_{i=1}^t e^{a_{t,i}}\varphi_2(-\delta_{t,i})\boldsymbol{v}_i + e^{a_{t,i-1}}\varphi_2(\delta_{t,i}) \boldsymbol{v}_{i-1}`,
+    why: '用第 ③ 节的恒等式 φ₁−φ₂ = eˣφ₂(−x)，并注意 a_{i−1}+δ_i = a_i：蓝色那块改写成以右端点为基准' },
+  { tex: String.raw`=\sum_{i=1}^t e^{a_{t,i}}\varphi_2(-\delta_{t,i})\boldsymbol{v}_i + \sum_{i=0}^{t-1} e^{a_{t,i}}\varphi_2(\delta_{t,i+1}) \boldsymbol{v}_i`,
+    why: '第二个求和的下标平移 i → i+1，两项都变成“v_i 的系数”' },
+  { tex: String.raw`= e^{a_{t,0}}\varphi_2(\delta_{t,1}) \boldsymbol{v}_0 + e^{a_{t,t}}\varphi_2(-\delta_{t,t})\boldsymbol{v}_t + \sum_{i=1}^{t-1} e^{a_{t,i}} \big(\varphi_2(-\delta_{t,i}) + \varphi_2(\delta_{t,i+1})\big) \boldsymbol{v}_i`,
+    why: '首尾只出现在一个求和里，中间的 v_i 同时收到左段的蓝色份额和右段的橙色份额 —— 这就是下方动画' },
+]));
+
+const S4 = { T: 5, a: [], p: 0 };
+function rand4() { S4.a = [0]; for (let i = 1; i <= S4.T; i++) S4.a.push(+(VIZ.randn() * 0.8).toFixed(2)); }
+const draw4 = VIZ.onRender(() => {
+  const { T, a } = S4, b = corrections(a), ticks = VIZ.linspace(0, T, T + 1);
+  const yMax = Math.max(...a.map((x, i) => Math.exp(Math.max(x, x + b[i])))) * 1.1;
+  const cv = $('c4'), W = cv.clientWidth, H = cv.clientHeight, mid = H * 0.47;
+  const top = VIZ.plot(cv, { x: [0, T], y: [0, yMax], box: [0, 0, W, mid], m: { l: 50, r: 30, t: 18, b: 22 } }).axes({ xTicks: ticks });
+  const bot = VIZ.plot(cv, { keep: true, x: [0, T], y: [0, yMax], box: [0, mid, W, H], m: { l: 50, r: 30, t: 18, b: 28 } }).axes({ xTicks: ticks });
+  top.text('连续曲线 e^(a_s)：每段切成 橙(→左) + 蓝(→右)', top.L + 6, top.T, { px: true, align: 'left' });
+  bot.text('端点收集到的权重 e^(a_i+b_i)', bot.L + 6, bot.T, { px: true, align: 'left' });
+
+  const bw = Math.min(40, top.sx(1) * 0.42), ctx = top.ctx, stack = new Array(T + 1).fill(0), P = S4.p * T;
+  for (let i = 1; i <= T; i++) bot.bar(i, Math.exp(a[i]), { w: bw + 6, fill: null, stroke: C.base, dash: [4, 3] });
+  for (let j = 1; j <= T; j++) {
+    const u = VIZ.clamp(P - (j - 1), 0, 1), e = VIZ.ease.inOut(u), d = a[j] - a[j - 1];
+    const f = s => Math.exp(a[j - 1] + (s - j + 1) * d), lf = s => f(s) * (j - s), fade = 1 - 0.75 * Math.min(1, u * 1.5);
+    top.area(lf, 0, { from: j - 1, to: j, n: 80, fill: VIZ.alpha(C.pa, .7 * fade) })
+       .area(f, lf, { from: j - 1, to: j, n: 80, fill: VIZ.alpha(C.pb, .65 * fade) })
+       .fn(f, { from: j - 1, to: j, n: 80, color: C.new });
+    if (u > 0 && u < 1) { ctx.strokeStyle = C.text; ctx.lineWidth = 1; ctx.strokeRect(top.X(j - 1), top.T, top.sx(1), top.B - top.T); }
+    if (u <= 0) continue;
+    // 两块份额从段中心飞到各自端点，在下方堆叠
+    [[Math.exp(a[j - 1]) * phi2(d), C.pa, j - 1, -bw - 2], [Math.exp(a[j]) * phi2(-d), C.pb, j, 2]].forEach(([share, col, tgt, dx]) => {
+      const h = bot.sy(share), sx = top.X(j - .5) + dx, sy = top.B - h, tx = bot.X(tgt) - bw / 2, ty = bot.Y(stack[tgt]) - h;
+      const x = VIZ.lerp(sx, tx, e), y = VIZ.lerp(sy, ty, e);
+      ctx.fillStyle = VIZ.alpha(col, .9); ctx.fillRect(x, y, bw, h); ctx.strokeStyle = 'rgba(0,0,0,.35)'; ctx.strokeRect(x, y, bw, h);
+      if (u >= 1) stack[tgt] += share;
+    });
+  }
+  for (let i = 0; i <= T; i++) top.dot(i, Math.exp(a[i]), { r: 3.5 });
+
+  const pc = VIZ.softmax(a.map((x, i) => x + b[i])), ps = VIZ.softmax(a.map((x, i) => (i ? x : -Infinity)));
+  let rows = ` i    a_i      b_i     e^{a+b}   标准P    连续P\n`;
+  for (let i = 0; i <= T; i++) rows += `${String(i).padStart(2)}  ${fmt(a[i], 2)}  ${fmt(b[i], 3)}  ${fmt(Math.exp(a[i] + b[i]), 3)}  ${i ? fmt(ps[i], 3) : '   —  '}  <b>${fmt(pc[i], 3)}</b>\n`;
+  VIZ.readout('o4', rows + '注意：两端点 b ≈ log(1/2) = −0.693（只有一侧邻居）；内部点 b 在 0 附近，由邻居的差决定正负。');
+});
+VIZ.player({ button: 'b4play', range: 'r4p', label: 'v4p', ms: 1300 * S4.T, onUpdate: u => { S4.p = u; draw4(); } });
+$('b4rand').onclick = () => { rand4(); draw4(); };
+
+/* ================= ⑤ 注意力矩阵 ================= */
+const S5 = { T: 12, d: 16, Q: [], K: [], row: 8 };
+function rand5() {
+  const { T, d } = S5, rho = +$('s5corr').value; S5.Q = []; S5.K = [];
+  let prev = Array.from({ length: d }, () => VIZ.randn());
+  for (let i = 0; i <= T; i++) {
+    S5.Q.push(Array.from({ length: d }, () => VIZ.randn()));
+    const k = prev.map(x => rho * x + Math.sqrt(1 - rho * rho) * VIZ.randn()); S5.K.push(k); prev = k;
+  }
+}
+function compute5() {
+  const { T, d, Q, K } = S5, tau = VIZ.num('r5s');
+  const dot = (x, y) => x.reduce((s, xi, j) => s + xi * y[j], 0) * tau / Math.sqrt(d);
+  const k0 = $('s5k0').value === 'zero' ? new Array(d).fill(0) : K[1];
+  const out = { Ps: [], Pc: [], Pa: [], B: [] };
+  for (let t = 1; t <= T; t++) {
+    const a = [dot(Q[t], k0)]; for (let i = 1; i <= t; i++) a.push(dot(Q[t], K[i]));
+    const b = corrections(a), bA = b.map((bi, i) => (i === 0 || i === t ? bi : (a[i - 1] + a[i + 1] - 2 * a[i]) / 6));
+    out.B.push(b);
+    out.Ps.push(VIZ.softmax(a.map((x, i) => (i ? x : -Infinity))));
+    out.Pc.push(VIZ.softmax(a.map((x, i) => x + b[i])));
+    out.Pa.push(VIZ.softmax(a.map((x, i) => x + bA[i])));
+  }
+  return out;
+}
+const draw5 = VIZ.onRender(() => {
+  const { Ps, Pc, Pa, B } = compute5(), t = S5.row;
+  const common = { highlightRow: t - 1, colLabel: 'i → (key)', rowLabel: 't ↓ (query)', onClick: ({ r }) => { S5.row = r + 1; draw5(); } };
+  VIZ.heatmap('c5a', Ps, Object.assign({ mask: (r, c) => c === 0 || c > r + 1 }, common));
+  VIZ.heatmap('c5b', Pc, Object.assign({ mask: (r, c) => c > r + 1 }, common));
+  VIZ.heatmap('c5c', B, Object.assign({ mask: (r, c) => c > r + 1, color: v => VIZ.cmap.div(v, 1.2) }, common));
+
+  const ps = Ps[t - 1], pc = Pc[t - 1], pa = Pa[t - 1];
+  const p = VIZ.plot('c5d', { x: [-0.6, t + 0.6], y: [0, Math.max(...ps, ...pc, ...pa) * 1.15], m: { l: 40, r: 14, t: 18, b: 26 } })
+    .axes({ xTicks: VIZ.linspace(0, t, t + 1), yTicks: 'auto' });
+  p.text(`第 t=${t} 行的注意力权重`, p.L + 8, p.T, { px: true, align: 'left' });
+  const bw = p.sx(1) * 0.3;
+  for (let i = 0; i <= t; i++) {
+    if (i > 0) p.bar(i, ps[i], { w: bw, dx: -bw * 0.55, fill: VIZ.alpha(C.base, .85) });
+    p.bar(i, pc[i], { w: bw, dx: bw * 0.55, fill: VIZ.alpha(C.new, .9) });
+  }
+  p.path(pa.map((y, i) => [i + 0.12, y]), { color: C.approx, width: 1.5 });
+  pa.forEach((y, i) => p.dot(i + 0.12, y, { color: C.approx, r: 3 }));
+
+  const H = q => -q.reduce((s, x) => s + (x > 0 ? x * Math.log(x) : 0), 0);
+  const tv = pc.reduce((s, x, i) => s + Math.abs(x - pa[i]), 0) / 2;
+  VIZ.readout('o5',
+`第 t=${t} 行：熵 H(标准) = ${H(ps).toFixed(3)}   H(连续化) = ${H(pc).toFixed(3)}   （连续化通常更平滑 → 熵更高）
+精确 b 与 “二阶差分/6” 近似之间的总变差距离 = ${tv.toFixed(4)}   ${tv < 0.02 ? '<span class="ok">近似很好</span>' : '<span class="bad">分数尺度较大时高阶项不可忽略</span>'}
+第 0 列 = k₀,v₀（${$('s5k0').value === 'zero' ? '全零 ⇒ a_{t,0}=0，像一个 Sink token' : '复制 k₁,v₁'}）`);
+});
+VIZ.slider('r5s', draw5);
+$('s5k0').onchange = draw5;
+$('s5corr').onchange = () => { rand5(); draw5(); };
+$('b5rand').onclick = () => { rand5(); draw5(); };
+
+/* ================= ⑥ Short Conv ================= */
+const draw6 = VIZ.onRender(() => {
+  const a0 = VIZ.num('r6a'), a1 = VIZ.num('r6b'), a2 = VIZ.num('r6c');
+  const exact = Math.log(phi2(a0 - a1) + phi2(a2 - a1)), approx = (a0 + a2 - 2 * a1) / 6;
+  const cv = $('c6'), W = cv.clientWidth, H = cv.clientHeight;
+  // 上半：三个分数与修正后的值
+  const p = VIZ.plot(cv, { x: [-0.5, 4.5], y: [-3.4, 3.4], box: [0, 0, W, H / 2], m: { l: 20, r: 10, t: 10, b: 24 } });
+  p.hline(0, { color: C.line, dash: [] });
+  [['a_{i−1}', a0, C.muted], ['a_i', a1, C.text], ['a_{i+1}', a2, C.muted], ['a_i+b_i', a1 + exact, C.new], ['≈卷积', a1 + approx, C.approx]]
+    .forEach(([n, v, c], k) => { p.bar(k, v, { w: p.sx(1) * 0.5, fill: VIZ.alpha(c, .85), label: v.toFixed(2) }); p.text(n, p.X(k), p.B + 18, { px: true }); });
+  // 下半：对称邻居时的精确 b 与一阶近似
+  const q = VIZ.plot(cv, { keep: true, x: [-4, 4], y: [-2.2, 2.2], box: [0, H / 2, W, H], m: { l: 40, r: 14, t: 22, b: 22 } })
+    .axes({ xTicks: [-4, -2, 0, 2, 4], zero: true });
+  q.fn(x => Math.log(2 * phi2(x)), { color: C.new }).fn(x => x / 3, { color: C.approx, dash: [5, 4] });
+  const dd = (a0 + a2 - 2 * a1) / 2;
+  q.dot(VIZ.clamp(dd, -4, 4), Math.log(2 * phi2(dd)), { r: 4 });
+  q.text('对称邻居 d₁=d₂=x：b = log 2φ₂(x)（紫） vs  x/3（黄虚）', q.L + 4, q.T - 6, { px: true, align: 'left' });
+  VIZ.readout('o6',
+`二阶差分 Δ² = a_{i−1}+a_{i+1}−2a_i = ${fmt(a0 + a2 - 2 * a1, 3)}
+b_i 精确值     = log(φ₂(a_{i−1}−a_i)+φ₂(a_{i+1}−a_i)) = <b>${fmt(exact)}</b>
+b_i 一阶近似   = Δ²/6 = ${fmt(approx)}    误差 ${Math.abs(exact - approx).toFixed(4)}
+⇒ 峰值被“削低”，谷值被“填高”：沿 key 方向的平滑（Short Conv）`);
+});
+['r6a', 'r6b', 'r6c'].forEach(id => VIZ.slider(id, draw6));
+
+/* ================= ⑦ 示意训练曲线 ================= */
+let p7 = 1;
+const base7 = x => 2.5 + 1.6 * Math.exp(-5 * x);
+const draw7 = VIZ.onRender(() => VIZ.schematic('c7', {
+  y: [2.2, 4.2], progress: p7, xLabel: '训练步数 →', yLabel: 'Loss（示意）', marks: [{ x: .45, label: '切换点' }],
+  curves: [
+    { name: '标准 + RoPE', color: C.base, f: base7 },
+    { name: '连续化 + RoPE', color: C.new, f: x => base7(x) - 0.13 * Math.exp(-4 * x) * (1 - Math.exp(-40 * x)) },
+    { name: '连续化 无RoPE', color: C.warn, f: x => base7(x) + 0.12 * (1 - Math.exp(-6 * x)), dash: [6, 4] },
+    { name: '中途切换', color: C.approx, f: x => (x < 0.45 ? base7(x) : base7(x) + 0.06 * Math.exp(-14 * (x - 0.45))), dash: [2, 3] },
+  ],
+}));
+$('b7play').onclick = () => VIZ.animate(3000, u => { p7 = u; draw7(); });
+
+rand1(); rand4(); rand5();
+VIZ.start();
+</script>
+</body>
+</html>

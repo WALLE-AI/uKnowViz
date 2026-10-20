@@ -1,0 +1,592 @@
+<!-- 范例：连续化 Softmax Attention（kexue.fm/archives/11980）
+     仅包含页面专属部分：<header>…</main> 与「页面脚本」。<head>、viz-core 内联部分由 scaffold.py 生成。
+     完整页面见项目中的 continuous-softmax-attention/index.html -->
+<header class="hero">
+  <h1>连续化 Softmax Attention</h1>
+  <p>把“对有限个向量做加权平均”变成“对一条连续曲线求积分”，再重新离散化——会得到什么？</p>
+  <p class="src">解读自 苏剑林（科学空间）《<a href="https://kexue.fm/archives/11980" target="_blank">连续化 Softmax Attention</a>》</p>
+</header>
+<nav class="toc">
+  <a href="#s0">⓪ 大白话版</a><a href="#s1">① 问题</a><a href="#s2">② 单段积分</a><a href="#s3">③ φ 函数</a>
+  <a href="#s4">④ 组装</a><a href="#s5">⑤ 注意力矩阵</a><a href="#s6">⑥ Short Conv</a>
+  <a href="#s7">⑦ 实验</a><a href="#s8">⑧ 小结</a><a href="#s9">📖 术语表</a>
+</nav>
+<main>
+
+<!-- ================= 0 ================= -->
+<section id="s0">
+  <h2><span class="num">⓪</span>先用大白话理解：这篇文章在讲什么？</h2>
+  <div class="card">
+    <p><b>Attention（注意力）</b>是 ChatGPT 这类大模型的核心零件。它解决的问题是：读到某个词时，应该“回头看”前面哪些词、各看多少？</p>
+    <div class="analogy">
+      <div><div class="ico">🔍</div><b>Query（查询）</b><br>当前这个词提出的“问题”。<br>比如读到“它”，问的是：“它”指谁？</div>
+      <div><div class="ico">🏷️</div><b>Key（标签）</b><br>前面每个词身上贴的“标签”。<br>问题和标签越匹配，打分 $a_i$ 越高。</div>
+      <div><div class="ico">📦</div><b>Value（内容）</b><br>每个词真正携带的信息。<br>最后按分数比例把内容“混合”起来。</div>
+    </div>
+    <p><b>Softmax</b> 就是把分数变成“注意力份额”的规则：先取 $e^{a_i}$（让高分更突出），再除以总和，使所有份额加起来正好等于 100%。这好比按得分把一块蛋糕分给几个人。</p>
+
+    <div class="plain">
+      <p style="margin-top:0">普通的注意力只关心<b>一个个独立的词</b>，就像只在 1 号、2 号、3 号……这些“站点”上收集信息。</p>
+      <p>这篇文章换了个想法：如果把相邻站点之间<b>用直线连起来</b>，假设信息在两个词之间是“渐变”的，那么注意力就不再是一根根柱子，而是一条连绵的“山脉”。这时就不用“把柱子加起来”，而是去<b>算山脉下面的面积</b>（也就是积分）。</p>
+      <p>这就叫<b>“连续化”</b>。数学上把积分算出来、再还原成能在电脑上计算的形式，叫<b>“重新离散化”</b>。</p>
+    </div>
+
+    <div class="key">
+      <b>🎯 一句话结论：</b>连续化之后，结果<b>仍然是普通的 Softmax 注意力</b>，只是每个词的分数会参考<b>左右邻居</b>的分数，自动做一点“平滑”：太突出的被削低一点，被冷落的被抬高一点。这相当于给注意力加了一个“模糊滤镜”，业内叫 <b>Short Conv（短卷积）</b>。<br>
+      <b>📉 实验结果：</b>训练初期确实学得更快，但最后和普通版本打平，而且计算速度只有原来的约 1/4。所以它目前更像一个<b>“数学上很漂亮”的发现</b>，而不是实用的改进。
+    </div>
+    <p class="note">下面的章节带你一步步看这个结论是怎么来的。每一节都有一个 🧒“通俗地说”框，看不懂公式的话，只看这些框和动画也能明白大意。</p>
+  </div>
+</section>
+
+<!-- ================= 1 ================= -->
+<section id="s1">
+  <h2><span class="num">①</span>问题：把求和换成积分</h2>
+  <div class="grid2">
+    <div class="card">
+      <p>标准 Softmax Attention 只在整数位置 $i=1,\dots,t$ 上取值：</p>
+      $$\boldsymbol{o}_t = \frac{\sum_{i=1}^t e^{\boldsymbol{q}_t\cdot\boldsymbol{k}_i} \boldsymbol{v}_i}{\sum_{i=1}^t e^{\boldsymbol{q}_t\cdot\boldsymbol{k}_i}}$$
+      <p>连续化版本把它改成在 $[0,t]$ 上的积分：</p>
+      $$\boldsymbol{o}_t = \frac{\int_0^t e^{\boldsymbol{q}_t\cdot\boldsymbol{k}_s} \boldsymbol{v}_s\, ds}{\int_0^t e^{\boldsymbol{q}_t\cdot\boldsymbol{k}_s}\, ds}$$
+    </div>
+    <div class="card">
+      <p>非整数点的 $\boldsymbol{k}_s,\boldsymbol{v}_s$ 用<b>线性插值</b>定义，对 $s\in[i-1,i]$：</p>
+      $$\boldsymbol{k}_s = (i - s)\boldsymbol{k}_{i-1} + (s - i + 1) \boldsymbol{k}_i$$
+      <p>$\boldsymbol{v}_s$ 同理。为了让 $[0,1]$ 这一段有定义，需要额外引入 $\boldsymbol{k}_0,\boldsymbol{v}_0$（类似一个 Sink token）。</p>
+      <p class="note">关键观察：$\boldsymbol{k}_s$ 对 $s$ 线性 ⇒ 分数 $a_s=\boldsymbol{q}_t\cdot\boldsymbol{k}_s$ 也对 $s$ 线性 ⇒ 每一段上 $e^{a_s}$ 都是一段<b>指数曲线</b>，可以精确积分。</p>
+    </div>
+  </div>
+  <div class="card">
+    <canvas id="c1" style="height:330px"></canvas>
+    <div class="controls">
+      <button class="primary" id="b1play">▶ 播放：离散 → 连续</button>
+      <label>形变 <input type="range" id="r1m" min="0" max="1" step="0.001" value="0"><span class="val" id="v1m">0</span></label>
+      <button id="b1rand">🎲 随机分数</button>
+    </div>
+    <div class="legend">
+      <span><i class="sw base"></i>标准：只在整数点有权重 $e^{a_i}$</span>
+      <span><i class="sw new"></i>连续化：$e^{a_s}$ 曲线下的面积（$a_s$ 分段线性）</span>
+      <span><i class="sw approx"></i>$v_s$（以标量演示，右侧坐标）</span>
+    </div>
+    <div class="readout" id="o1"></div>
+    <div class="plain how">
+      <ul>
+        <li><b>绿色柱子</b>：普通注意力。每个位置一根柱子，柱子越高，越受关注。</li>
+        <li>点 <b>▶ 播放</b>：柱子逐渐消失，换成一条<b>紫色山脉</b>。山脉在每个整数位置正好经过柱顶，柱子之间则平滑过渡。</li>
+        <li><b>黄色折线</b>是每个位置携带的“内容”$v$（这里用一个数代替一个向量），它也被连成了折线。</li>
+        <li>最后的输出 $o_t$ = “内容 × 关注度”的总面积 ÷ 山脉总面积，相当于<b>按面积加权的平均值</b>。</li>
+      </ul>
+    </div>
+    <div class="plain">
+      想象你坐火车，只在 1、2、3…号站停靠拍照，这是普通注意力。连续化则是<b>全程开着摄像机</b>，站与站之间的风景也被记录下来（用直线“脑补”）。最后统计“看到了什么”时，不再只数照片，而是看整段录像。
+      下方读数中“数值积分”和“闭式解”几乎完全一样，说明后文推出的公式是对的。
+    </div>
+  </div>
+</section>
+
+<!-- ================= 2 ================= -->
+<section id="s2">
+  <h2><span class="num">②</span>单段积分：一段面积如何“分给”两个端点</h2>
+  <div class="card">
+    <p>记 $a_{t,i} = \boldsymbol{q}_t\cdot\boldsymbol{k}_i$，$\delta_{t,i}=a_{t,i}-a_{t,i-1}$。在第 $i$ 段上，把 $s$ 平移到 $[0,1]$：</p>
+    $$e^{a_s}\boldsymbol{v}_s = \underbrace{e^{a_{i-1}+s\delta}(1-s)}_{\color{#f59f4c}\text{给 }\boldsymbol{v}_{i-1}}\,\boldsymbol{v}_{i-1} + \underbrace{e^{a_{i-1}+s\delta}\, s}_{\color{#4dabf7}\text{给 }\boldsymbol{v}_{i}}\,\boldsymbol{v}_{i}$$
+    <p>也就是说，曲线 $e^{a_s}$ 下的面积被权重 $(1-s)$ 与 $s$ <b>切成两块</b>（下图橙色与蓝色），分别积分得到：</p>
+    $$\int_{i-1}^i e^{a_s} \boldsymbol{v}_s ds = {\color{#f59f4c}e^{a_{i-1}}\varphi_2(\delta)}\,\boldsymbol{v}_{i-1} + {\color{#4dabf7}e^{a_{i}}\varphi_2(-\delta)}\,\boldsymbol{v}_{i},\qquad \int_{i-1}^i e^{a_s} ds = e^{a_{i-1}}\varphi_1(\delta)$$
+    <canvas id="c2" style="height:320px"></canvas>
+    <div class="controls">
+      <label>$a_{i-1}$ <input type="range" id="r2l" min="-2.5" max="2.5" step="0.01" value="-0.5"><span class="val" data-for="r2l"></span></label>
+      <label>$a_{i}$ <input type="range" id="r2r" min="-2.5" max="2.5" step="0.01" value="1.5"><span class="val" data-for="r2r"></span></label>
+      <button id="b2eq">令 $\delta=0$</button>
+    </div>
+    <div class="readout" id="o2"></div>
+    <div class="key">💡 当 $\delta=0$（相邻两个分数相同）时，两块面积各占一半 —— 这正是<b>梯形求积公式</b>；$\delta\ne 0$ 时，分数更高的那一端会“抢走”更多面积。</div>
+    <div class="plain">
+      只看相邻两个位置之间的这一小段山坡。这块面积最后要“还”给两个端点，问题是各还多少？
+      <ul>
+        <li>规则很直观：<b>离谁近就归谁</b>。靠近左端的部分大多归左边（橙色），靠近右端的部分大多归右边（蓝色）。</li>
+        <li>如果两端一样高（点“令 δ=0”），就正好<b>对半分</b>。这和小学学的梯形面积公式“(上底+下底)×高÷2”是一回事。</li>
+        <li>如果一端更高，山坡在那一侧更“胖”，那一端就<b>分得更多</b>。拖动滑块试试，右边的柱子会显示分配比例。</li>
+      </ul>
+      就像两个村子之间有一片农田，按“离哪个村更近”来划分归属，地势更高（更肥沃）的那一侧收获更多。
+    </div>
+  </div>
+</section>
+
+<!-- ================= 3 ================= -->
+<section id="s3">
+  <h2><span class="num">③</span>两个辅助函数 $\varphi_1,\varphi_2$</h2>
+  <div class="grid2">
+    <div class="card">
+      $$\varphi_1(x) \triangleq \int_0^1 e^{s x} ds = \frac{e^x - 1}{x}$$
+      $$\varphi_2(x) \triangleq \int_0^1 e^{s x} (1-s) ds = \frac{e^x - 1 - x}{x^2}$$
+      <p>$x=0$ 处取极限：$\varphi_1(0)=1,\ \varphi_2(0)=\tfrac12$。由积分定义可知二者<b>恒正</b>，后面取对数不会出问题。</p>
+      <p>关键恒等式（把 $\boldsymbol{v}_i$ 的系数改写成以 $e^{a_i}$ 为基准）：</p>
+      $$\varphi_1(x) - \varphi_2(x) = e^x \varphi_2(-x)$$
+      <p class="note">含义：$\int_0^1 e^{sx}s\,ds$（蓝色那块）从右端点看过去，就是把 $x$ 反号后的 $\varphi_2$，再乘以 $e^x$。</p>
+    </div>
+    <div class="card">
+      <canvas id="c3" style="height:300px"></canvas>
+      <div class="controls">
+        <label>$x$ <input type="range" id="r3x" min="-4" max="4" step="0.01" value="1.2"><span class="val" data-for="r3x"></span></label>
+      </div>
+      <div class="legend">
+        <span><i class="sw new"></i>$\varphi_1(x)$</span>
+        <span><i class="sw pa"></i>$\varphi_2(x)$</span>
+        <span><i class="sw pb"></i>$e^x\varphi_2(-x)$</span>
+        <span><i class="sw text" style="opacity:.6"></i>$\varphi_1-\varphi_2$（虚线，与蓝线重合）</span>
+      </div>
+      <div class="readout" id="o3"></div>
+    </div>
+  </div>
+  <div class="plain">
+    $\varphi_1$ 和 $\varphi_2$ 不神秘，它们只是两个<b>“记账工具”</b>：
+    <ul>
+      <li>$\varphi_1$ 算的是上一节那一整段山坡的<b>总面积</b>（以左端高度为单位）。</li>
+      <li>$\varphi_2$ 算的是其中<b>分给左端点的那一块</b>（橙色）。</li>
+      <li>恒等式 $\varphi_1-\varphi_2=e^x\varphi_2(-x)$ 的意思是：总面积减去橙色，就是蓝色；而<b>蓝色从右端点看过去，和橙色是同一种形状</b>，只是方向反过来。所以一个 $\varphi_2$ 就能同时描述左右两份。</li>
+    </ul>
+    不用记公式，只需记住两点：它们<b>永远是正数</b>；两端一样高时，$\varphi_1=1$（整块），$\varphi_2=\tfrac12$（一半）。
+  </div>
+</section>
+
+<!-- ================= 4 ================= -->
+<section id="s4">
+  <h2><span class="num">④</span>组装：每个端点收集左右两段送来的面积</h2>
+  <div class="card">
+    <p>把所有段的结果加起来并按 $\boldsymbol{v}_i$ 合并同类项。点 $i$ 会从<b>左边那段</b>收到蓝色份额 $e^{a_i}\varphi_2(-\delta_i)$，从<b>右边那段</b>收到橙色份额 $e^{a_i}\varphi_2(\delta_{i+1})$：</p>
+    $$\text{分子}= \sum_{i=0}^t e^{a_{t,i} + b_{t,i}} \boldsymbol{v}_i,\qquad e^{b_{t,i}} = \left\{\begin{aligned}
+      &\varphi_2(a_{t,1} - a_{t,0}) && i = 0 \\
+      &\varphi_2(a_{t,i-1} - a_{t,i}) + \varphi_2(a_{t,i+1} - a_{t,i}) && 1\leq i\leq t-1 \\
+      &\varphi_2(a_{t,t-1} - a_{t,t}) && i = t
+    \end{aligned}\right.$$
+    <p>分母就是把所有 $\boldsymbol{v}_i$ 换成 $1$，于是最终仍然是一个 Softmax：</p>
+    $$\boxed{\ \boldsymbol{o}_t = \frac{\sum_{i=0}^t e^{a_{t,i} + b_{t,i}} \boldsymbol{v}_i}{\sum_{i=0}^t e^{a_{t,i} + b_{t,i}}}\ }$$
+    <div id="st4" class="card" style="background:var(--panel2)"></div>
+    <canvas id="c4" style="height:460px"></canvas>
+    <div class="controls">
+      <button class="primary" id="b4play">▶ 播放组装动画</button>
+      <label>进度 <input type="range" id="r4p" min="0" max="1" step="0.001" value="0"><span class="val" id="v4p"></span></label>
+      <button id="b4rand">🎲 随机分数</button>
+    </div>
+    <div class="legend">
+      <span><i class="sw pa"></i>橙：段的左份额 → 左端点</span>
+      <span><i class="sw pb"></i>蓝：段的右份额 → 右端点</span>
+      <span><i class="sw dashed"></i>虚线框：标准 Softmax 的权重 $e^{a_i}$</span>
+    </div>
+    <div class="readout" id="o4"></div>
+    <div class="plain how">
+      <ul>
+        <li><b>上半部分</b>：整条山脉被切成若干段，每段都分成橙、蓝两块。</li>
+        <li>点 <b>▶ 播放</b>：每段的橙色块飞向<b>左边</b>的端点，蓝色块飞向<b>右边</b>的端点，在下半部分堆成柱子。</li>
+        <li><b>绿色虚线框</b>是普通注意力给这个位置的权重，可以和堆出来的柱子比一比。</li>
+      </ul>
+    </div>
+    <div class="plain">
+      每个位置都从<b>左右两块农田</b>各收一份粮食，加起来就是它最终的“关注度”。
+      <ul>
+        <li>和普通注意力相比，相当于给每个位置的分数乘了一个<b>修正系数</b> $e^{b_i}$。</li>
+        <li>这个系数由“<b>我和邻居谁高谁低</b>”决定：邻居比我高，我能多分一点；邻居比我低，我会少一点。</li>
+        <li>第一个和最后一个位置只有一侧有邻居，只能收到一份，所以大约<b>只有一半</b>（$b\approx\log\frac12$）。</li>
+      </ul>
+      最妙的是，最后的公式<b>还是 Softmax 的样子</b>，只是分数从 $a_i$ 变成了 $a_i+b_i$。这意味着它很容易“塞进”现有的模型里。
+    </div>
+  </div>
+</section>
+
+<!-- ================= 5 ================= -->
+<section id="s5">
+  <h2><span class="num">⑤</span>注意力矩阵对比：标准 vs 连续化</h2>
+  <div class="card">
+    <p>随机生成 $\boldsymbol{q}_t,\boldsymbol{k}_i\in\mathbb{R}^{d}$，计算完整的因果注意力矩阵。连续化版本多出第 0 列（$\boldsymbol{k}_0,\boldsymbol{v}_0$），每个分数被加上了依赖<b>左右邻居</b>的修正 $b_{t,i}$。<b>点击任一行</b>查看该行权重分布。</p>
+    <div class="grid3">
+      <div><div class="note" style="text-align:center">标准 Softmax $P_{t,i}$</div><canvas id="c5a" style="height:270px"></canvas></div>
+      <div><div class="note" style="text-align:center">连续化 Softmax</div><canvas id="c5b" style="height:270px"></canvas></div>
+      <div><div class="note" style="text-align:center">修正项 $b_{t,i}$（红正 蓝负）</div><canvas id="c5c" style="height:270px"></canvas></div>
+    </div>
+    <div class="controls">
+      <label>分数尺度 $\tau$ <input type="range" id="r5s" min="0.2" max="4" step="0.05" value="1.6"><span class="val" data-for="r5s"></span></label>
+      <label>$\boldsymbol{k}_0,\boldsymbol{v}_0$ <select id="s5k0"><option value="zero">全零（作者实验选择）</option><option value="copy">复制 $\boldsymbol{k}_1,\boldsymbol{v}_1$</option></select></label>
+      <label>K 的相邻相关性 <select id="s5corr"><option value="0">独立随机</option><option value="0.85">平滑（类时间序列）</option></select></label>
+      <button id="b5rand">🎲 重新采样</button>
+    </div>
+    <canvas id="c5d" style="height:240px;margin-top:10px"></canvas>
+    <div class="legend">
+      <span><i class="sw base"></i>标准 Softmax</span>
+      <span><i class="sw new"></i>连续化（精确 $b$）</span>
+      <span><i class="sw approx"></i>连续化（$b$ 用二阶差分/6 近似）</span>
+    </div>
+    <div class="readout" id="o5"></div>
+    <div class="plain how">
+      <ul>
+        <li>每张热力图里，<b>每一行</b>是一个正在读的词（第 $t$ 个），<b>每一格</b>表示它对前面第 $i$ 个词的关注度。<b>越亮越关注</b>，右上角的黑色区域是“未来”，不能偷看。</li>
+        <li>对比左边两张图：连续化版本的亮点更“晕开”一些，尖锐的亮格变暗，旁边的格子变亮。</li>
+        <li>第三张图是修正量 $b$：<b>红色</b>表示被加分（通常是比邻居低的“山谷”），<b>蓝色</b>表示被减分（比邻居高的“山峰”，以及首尾两列）。</li>
+        <li>下方柱状图是选中那一行的详细对比。<b>黄线</b>是用“简单平滑公式”估算的结果，和紫色柱几乎重合，说明下一节的近似很准。</li>
+      </ul>
+      试试把“分数尺度”调大：分数差距越大，连续化的修正越明显。
+    </div>
+  </div>
+</section>
+
+<!-- ================= 6 ================= -->
+<section id="s6">
+  <h2><span class="num">⑥</span>$b_{t,i}$ 本质上是一个 Short Conv</h2>
+  <div class="grid2">
+    <div class="card">
+      <p>对内部点做泰勒展开（$\varphi_2(x)=\tfrac12+\tfrac{x}{6}+\tfrac{x^2}{24}+\cdots$）：</p>
+      $$b_{t,i} = \log \big(\varphi_2(a_{t,i-1} - a_{t,i}) + \varphi_2(a_{t,i+1} - a_{t,i})\big) = \frac{a_{t,i-1} + a_{t,i+1} - 2a_{t,i}}{6} + \cdots$$
+      <p>$a_{t,i-1} + a_{t,i+1} - 2a_{t,i}$ 正是二阶差分，即沿 $i$ 方向用核 $[\tfrac16,-\tfrac13,\tfrac16]$ 做的卷积。于是</p>
+      $$a_{t,i}+b_{t,i}\approx \tfrac16 a_{t,i-1}+\tfrac23 a_{t,i}+\tfrac16 a_{t,i+1}$$
+      <p>——连续化 ≈ <b>给 Attention 分数矩阵沿 key 方向做了一次平滑的 Short Conv</b>。而两个端点 $i=0,t$ 只有一侧邻居，大约只拿到 $\log\frac12$，对应梯形公式端点的半权重。</p>
+    </div>
+    <div class="card">
+      <canvas id="c6" style="height:300px"></canvas>
+      <div class="controls">
+        <label>$a_{i-1}$ <input type="range" id="r6a" min="-3" max="3" step="0.01" value="0.4"><span class="val" data-for="r6a"></span></label>
+        <label>$a_{i}$ <input type="range" id="r6b" min="-3" max="3" step="0.01" value="2.0"><span class="val" data-for="r6b"></span></label>
+        <label>$a_{i+1}$ <input type="range" id="r6c" min="-3" max="3" step="0.01" value="-0.6"><span class="val" data-for="r6c"></span></label>
+      </div>
+      <div class="readout" id="o6"></div>
+    </div>
+  </div>
+  <div class="plain">
+    这就像手机修图里的<b>“模糊/柔化滤镜”</b>：每个像素都和左右邻居按 $\tfrac16:\tfrac23:\tfrac16$ 的比例取平均，结果是<b>尖的变钝，凹的变满</b>。
+    <ul>
+      <li>拖动上面三个滑块，把中间的 $a_i$ 调得比两边高：紫色柱（修正后）会比原来<b>矮</b>。</li>
+      <li>把中间调得比两边低：修正后反而会<b>变高</b>。</li>
+    </ul>
+    “Short Conv（短卷积）”正是这种“只看左右几个邻居”的小滤镜，它是近几年很多新模型（如 Mamba 等线性注意力类模型）里常用的小技巧。<b>这篇文章的有趣之处在于：没人刻意设计它，只是“把求和改成积分”，这个滤镜就自己冒出来了。</b>
+  </div>
+</section>
+
+<!-- ================= 7 ================= -->
+<section id="s7">
+  <h2><span class="num">⑦</span>作者的简单实验</h2>
+  <div class="grid3">
+    <div class="card">
+      <span class="tag">效率</span>
+      <div class="stat">≈ 1/4</div>
+      <p>$b_{t,i}$ 依赖相邻分数，<b>无法直接复用 Flash Attention</b>。理论 FLOPs 基本一致，但作者让 K3 写的 Kernel 中细碎运算太多，速度只有标准 Softmax Attention 的约 1/4。</p>
+    </div>
+    <div class="card">
+      <span class="tag">位置编码</span>
+      <div class="stat">仍需 RoPE</div>
+      <p>连续化引入了局域先验，但<b>不能替代位置编码</b>：全 Full Attention 架构下，不加 RoPE 的连续化版本明显差于“标准 + RoPE”；加上 RoPE 后差距被追回。</p>
+    </div>
+    <div class="card">
+      <span class="tag">训练动态</span>
+      <div class="stat">先优后平</div>
+      <p>都加 RoPE 时，连续化前期明显更好，但差距逐渐缩窄，训练结束时两者基本重合。中途从标准版切换到连续化，起跳 Loss 不高，最终收敛到与标准版基本一致。</p>
+    </div>
+  </div>
+  <div class="card">
+    <canvas id="c7" style="height:280px"></canvas>
+    <div class="controls"><button class="primary" id="b7play">▶ 播放训练曲线</button></div>
+    <p class="schematic-note">上图是根据文中文字描述绘制的<b>定性示意图</b>，并非原文数据。作者推测：自然语言并非真正的时间序列，连续化带不来实质好处；在真正的时间序列任务上或许才能测出优势。</p>
+  </div>
+  <div class="plain">
+    一句话：<b>理论漂亮，实战打平</b>。
+    <ul>
+      <li><b>为什么慢？</b> 现在的大模型靠一个叫 Flash Attention 的“加速引擎”跑得飞快，但它只认标准公式。新公式要额外看邻居，引擎用不上，只能手写，于是慢了约 4 倍。</li>
+      <li><b>为什么还要 RoPE（位置编码）？</b> 连续化只让模型知道“谁和谁相邻”，却不知道“隔了多远”“谁在前谁在后”。这些仍然要靠位置编码提供。</li>
+      <li><b>为什么最终没优势？</b> 连续化默认两个词之间存在“渐变的中间状态”。温度、股价这类数据确实如此，但语言不是：在“苹果”和“跑步”之间，并不存在一个“一半苹果一半跑步”的词。前期它像一副“辅助轮”帮模型起步，等模型学会了，辅助轮就没用了。</li>
+    </ul>
+  </div>
+</section>
+
+<!-- ================= 8 ================= -->
+<section id="s8">
+  <h2><span class="num">⑧</span>小结</h2>
+  <div class="card">
+    <table>
+      <tr><th style="width:24%">步骤</th><th>做了什么</th><th style="width:34%">得到什么</th></tr>
+      <tr><td>连续化</td><td>$\sum_i \to \int_0^t ds$；$\boldsymbol{k},\boldsymbol{v}$ 线性插值；补 $\boldsymbol{k}_0,\boldsymbol{v}_0$</td><td>每段 $e^{a_s}$ 为指数曲线，可精确积分</td></tr>
+      <tr><td>分段积分</td><td>按 $(1-s)$、$s$ 把每段面积切给左右端点</td><td>$\varphi_1,\varphi_2$ 与恒等式 $\varphi_1-\varphi_2=e^x\varphi_2(-x)$</td></tr>
+      <tr><td>重新离散化</td><td>按 $\boldsymbol{v}_i$ 合并同类项</td><td>仍是 Softmax，分数变为 $a_{t,i}+b_{t,i}$</td></tr>
+      <tr><td>解读</td><td>对 $b_{t,i}$ 泰勒展开</td><td>≈ 二阶差分/6 ⇒ 注意力矩阵上的 Short Conv；$\boldsymbol{k}_0,\boldsymbol{v}_0$ ≈ Sink token</td></tr>
+      <tr><td>实验</td><td>语言模型预训练</td><td>前期更快、最终持平；需 RoPE；速度约 1/4</td></tr>
+    </table>
+    <div class="key">“连续化 → 离散化”是一条屡试不爽的探索路径（SSM、EFLA 皆如此）。对 Softmax Attention 而言，它重新推出了一个漂亮的结论：<b>连续化 Softmax Attention ≈ 给 Attention 矩阵加 Short Conv</b>。在自然语言上虽未见收益，但仍是一个值得赏析的结果。</div>
+    <div class="plain">
+      <b>用三句话讲给朋友听：</b>
+      <ol style="margin:4px 0;padding-left:1.4em">
+        <li>大模型读文字时，会给前面每个词打分，再按分数“分配注意力”。</li>
+        <li>如果假设词与词之间是平滑过渡的，用“算面积”代替“数柱子”，推导出来的新规则等于：<b>每个词的分数先和左右邻居平均一下，再分配注意力</b>。</li>
+        <li>这个想法让模型起步更快，但最终效果和原来一样，还更慢。它的价值在于揭示了“连续化”和“短卷积”这两个看似无关的东西其实是相通的。</li>
+      </ol>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 9 ================= -->
+<section id="s9">
+  <h2><span class="num">📖</span>术语表</h2>
+  <div class="card">
+    <dl class="gloss">
+      <dt>Attention 注意力</dt><dd>模型在处理当前词时，决定“回头看”哪些词、各看多少的机制。</dd>
+      <dt>Query / Key / Value</dt><dd>问题 / 标签 / 内容。用问题匹配标签得到分数，再按分数混合内容。</dd>
+      <dt>Softmax</dt><dd>把一组任意分数变成加起来为 100% 的份额：先取指数，再除以总和。高分会被放大。</dd>
+      <dt>注意力矩阵</dt><dd>把“每个词对每个前面的词的关注度”排成的表格，第 5 节的热力图就是它。</dd>
+      <dt>Causal 因果</dt><dd>只能看前面、不能看后面的词（生成文字时还不知道未来）。</dd>
+      <dt>线性插值</dt><dd>在两个已知点之间连一条直线，用来“猜”中间的值。</dd>
+      <dt>积分</dt><dd>求曲线下方的面积，可以看成“连续版本的求和”。</dd>
+      <dt>连续化 / 离散化</dt><dd>把一个个点变成连续的线 / 再把连续的结果写回按点计算的公式。</dd>
+      <dt>泰勒展开</dt><dd>用简单的多项式近似复杂的函数，只保留最主要的项，便于看清本质。</dd>
+      <dt>二阶差分</dt><dd>$a_{i-1}+a_{i+1}-2a_i$：衡量一个点比左右邻居“凸出”或“凹陷”了多少。</dd>
+      <dt>Short Conv 短卷积</dt><dd>只用相邻几个位置做加权平均的小滤镜，类似图片的模糊滤镜。</dd>
+      <dt>Sink token</dt><dd>在序列开头额外放的一个“空位”，让注意力在没什么可看时有地方“停靠”。这里的 $\boldsymbol{k}_0,\boldsymbol{v}_0$ 起类似作用。</dd>
+      <dt>RoPE 位置编码</dt><dd>告诉模型每个词在第几个位置、彼此相距多远的方法（旋转位置编码）。</dd>
+      <dt>Flash Attention</dt><dd>一种高度优化的注意力计算程序，速度快、省显存，但只支持标准公式。</dd>
+      <dt>SSM / EFLA</dt><dd>同样采用“先连续化、再离散化”思路设计出来的其他序列模型。</dd>
+    </dl>
+  </div>
+</section>
+</main>
+
+<script>
+/* ==== 页面脚本 ==== */
+'use strict';
+const { $, C, fmt } = VIZ;
+
+/* ---------- 文章中的数学 ---------- */
+const phi1 = x => (Math.abs(x) < 1e-6 ? 1 + x / 2 : Math.expm1(x) / x);
+const phi2 = x => (Math.abs(x) < 1e-3 ? 0.5 + x / 6 + x * x / 24 : (Math.expm1(x) - x) / (x * x));
+/** a: 分数 a_0..a_t → 修正项 b_0..b_t */
+function corrections(a) {
+  const t = a.length - 1;
+  return a.map((ai, i) => Math.log((i > 0 ? phi2(a[i - 1] - ai) : 0) + (i < t ? phi2(a[i + 1] - ai) : 0)));
+}
+/** 分段线性插值：arr[0..T] 在 s∈[0,T] 处的值 */
+const interp = (arr, s) => { const i = VIZ.clamp(Math.ceil(s), 1, arr.length - 1), u = s - (i - 1); return (1 - u) * arr[i - 1] + u * arr[i]; };
+
+/* ================= ① 离散 → 连续 ================= */
+const S1 = { T: 6, a: [], v: [], m: 0 };
+function rand1() {
+  S1.a = [0]; S1.v = [0];                       // k_0 = 0 ⇒ a_0 = 0；v_0 = 0
+  for (let i = 1; i <= S1.T; i++) { S1.a.push(+(VIZ.randn() * 0.9).toFixed(2)); S1.v.push(+VIZ.randn().toFixed(2)); }
+}
+const draw1 = VIZ.onRender(() => {
+  const { T, a, v, m } = S1, ticks = VIZ.linspace(0, T, T + 1);
+  const p = VIZ.plot('c1', { x: [0, T], y: [0, Math.max(...a.map(Math.exp)) * 1.12], m: { l: 46, r: 46 } })
+    .axes({ xTicks: ticks, yTicks: 'auto', xLabel: 's', yLabel: 'e^(a_s)' });
+  const vMax = Math.max(1, ...v.map(Math.abs)) * 1.15;
+  const pv = VIZ.plot('c1', { keep: true, x: [0, T], y: [-vMax, vMax], m: { l: 46, r: 46 } });   // 右侧 v 轴
+  pv.hline(0, { color: VIZ.alpha(C.approx, .25) }).text('v_s', pv.R + 22, pv.T + 6, { px: true, color: C.approx });
+
+  const sweep = T * Math.min(1, m * 1.25), ea = s => Math.exp(interp(a, s));
+  if (sweep > 0) {
+    p.area(ea, 0, { to: sweep, n: 400, fill: VIZ.alpha(C.new, .28) }).fn(ea, { to: sweep, n: 400, color: C.new, width: 2.2 });
+    pv.fn(s => interp(v, s), { to: sweep, color: VIZ.alpha(C.approx, .8), width: 1.5 });
+  }
+  const fade = Math.max(0, 1 - m * 1.6), bw = Math.min(22, p.sx(1) * 0.25);
+  for (let i = 1; i <= T; i++) p.bar(i, Math.exp(a[i]), { w: bw, fill: VIZ.alpha(C.base, .2 + .65 * fade) });
+  for (let i = 0; i <= T; i++) { p.dot(i, Math.exp(a[i]), { r: 3.5, color: i ? C.text : C.dim }); pv.dot(i, v[i], { r: 3, color: C.approx }); }
+  p.text('k₀=0, v₀=0', p.X(0) + 36, p.Y(1) - 10, { px: true, color: C.dim });
+
+  // 三种算法的输出对比：标准 / 数值积分 / 闭式解
+  let ns = 0, ds = 0; for (let i = 1; i <= T; i++) { ns += Math.exp(a[i]) * v[i]; ds += Math.exp(a[i]); }
+  const b = corrections(a); let nc = 0, dc = 0;
+  for (let i = 0; i <= T; i++) { const e = Math.exp(a[i] + b[i]); nc += e * v[i]; dc += e; }
+  let ni = 0, di = 0;
+  for (let j = 1; j <= T; j++) { ni += VIZ.integrate(s => ea(s) * interp(v, s), j - 1, j, 200); di += VIZ.integrate(ea, j - 1, j, 200); }
+  VIZ.readout('o1',
+`a_i = [${a.map(x => x.toFixed(2)).join(', ')}]     v_i = [${v.map(x => x.toFixed(2)).join(', ')}]
+标准 Softmax         o_t = ${fmt(ns / ds)}
+连续化（数值积分）    o_t = ${fmt(ni / di)}
+连续化（闭式解 ④）    o_t = <b>${fmt(nc / dc)}</b>   <span class="ok">✓ 与数值积分一致，误差 ${VIZ.fmtE(Math.abs(nc / dc - ni / di))}</span>`);
+});
+VIZ.player({ button: 'b1play', range: 'r1m', label: 'v1m', ms: 2600, onUpdate: u => { S1.m = u; draw1(); } });
+$('b1rand').onclick = () => { rand1(); draw1(); };
+
+/* ================= ② 单段面积切分 ================= */
+const draw2 = VIZ.onRender(() => {
+  const aL = VIZ.num('r2l'), aR = VIZ.num('r2r'), d = aR - aL, f = s => Math.exp(aL + s * d), left = s => f(s) * (1 - s);
+  const p = VIZ.plot('c2', { x: [0, 1], y: [0, Math.exp(Math.max(aL, aR)) * 1.15], m: { l: 50, r: 220, b: 30 } })
+    .axes({ xTicks: [0, 1], yTicks: 'auto', tickFmt: v => (v === 0 ? 'i−1' : v === 1 ? 'i' : +v.toFixed(2)) });
+  p.area(left, 0, { fill: VIZ.alpha(C.pa, .65) }).area(f, left, { fill: VIZ.alpha(C.pb, .6) }).fn(f, { color: C.new, width: 2.5 });
+  p.text('e^(a_s)', p.X(.5), p.Y(f(.5)) - 10, { px: true, color: C.text });
+
+  const A1 = Math.exp(aL) * phi2(d), A2 = Math.exp(aR) * phi2(-d), tot = Math.exp(aL) * phi1(d);
+  const q = VIZ.plot('c2', { keep: true, x: [0, 1], y: [0, tot * 1.15], box: [p.R + 30, 0, p.w, p.h], m: { l: 10, r: 110, t: 16, b: 30 } });
+  q.bar(.4, A1, { w: 44, fill: VIZ.alpha(C.pa, .85) }).bar(.4, A2, { w: 44, base: A1, fill: VIZ.alpha(C.pb, .85) })
+   .bar(.4, tot, { w: 44, fill: null, stroke: C.new });
+  q.text(`→ v_{i-1} ${(A1 / tot * 100).toFixed(0)}%`, q.X(.4) + 28, q.Y(A1 / 2) + 4, { px: true, align: 'left', color: C.pa });
+  q.text(`→ v_i ${(A2 / tot * 100).toFixed(0)}%`, q.X(.4) + 28, q.Y(A1 + A2 / 2) + 4, { px: true, align: 'left', color: C.pb });
+  q.text('面积分解', q.X(.4), q.B + 18, { px: true });
+
+  const n1 = VIZ.integrate(left, 0, 1), n2 = VIZ.integrate(s => f(s) * s, 0, 1);
+  VIZ.readout('o2',
+`δ = a_i − a_{i−1} = ${fmt(d, 2)}
+<span style="color:var(--pa)">橙</span> e^{a_{i−1}}·φ₂(δ)  = ${fmt(A1)}   （数值积分 ${fmt(n1)}）
+<span style="color:var(--pb)">蓝</span> e^{a_i}·φ₂(−δ)    = ${fmt(A2)}   （数值积分 ${fmt(n2)}）
+总  e^{a_{i−1}}·φ₁(δ) = ${fmt(tot)}   = 橙 + 蓝 ${Math.abs(A1 + A2 - tot) < 1e-9 ? '<span class="ok">✓</span>' : '<span class="bad">✗</span>'}`);
+});
+VIZ.slider('r2l', draw2); VIZ.slider('r2r', draw2);
+$('b2eq').onclick = () => { $('r2r').value = $('r2l').value; $('r2r').dispatchEvent(new Event('input')); };
+
+/* ================= ③ φ 函数 ================= */
+const draw3 = VIZ.onRender(() => {
+  const x0 = VIZ.num('r3x'), mirror = x => Math.exp(x) * phi2(-x);
+  const p = VIZ.plot('c3', { x: [-4, 4], y: [0, 5], m: { l: 36, r: 12, t: 12, b: 28 } })
+    .axes({ xTicks: [-4, -2, 0, 2, 4], yTicks: [1, 2, 3, 4, 5], zero: true });
+  p.fn(phi1, { color: C.new, width: 2.2 }).fn(phi2, { color: C.pa, width: 2.2 }).fn(mirror, { color: C.pb, width: 4 })
+   .fn(x => phi1(x) - phi2(x), { color: 'rgba(255,255,255,.8)', width: 1.4, dash: [5, 5] }).vline(x0);
+  [[phi1(x0), C.new], [phi2(x0), C.pa], [mirror(x0), C.pb]].forEach(([y, c]) => { if (y <= 5.2) p.dot(x0, y, { color: c, r: 4.5 }); });
+  VIZ.readout('o3',
+`φ₁(${x0.toFixed(2)}) = ${fmt(phi1(x0))}     φ₂(${x0.toFixed(2)}) = ${fmt(phi2(x0))}
+φ₁ − φ₂       = ${fmt(phi1(x0) - phi2(x0))}
+e^x · φ₂(−x)  = ${fmt(mirror(x0))}   <span class="ok">✓ 恒等式成立</span>`);
+});
+VIZ.slider('r3x', draw3);
+
+/* ================= ④ 组装 ================= */
+VIZ.onReady(() => VIZ.stepper('st4', [
+  { tex: String.raw`\text{分子}=\sum_{i=1}^t e^{a_{t,i-1}}\varphi_1(\delta_{t,i}) \boldsymbol{v}_i + e^{a_{t,i-1}}\varphi_2(\delta_{t,i}) (\boldsymbol{v}_{i-1} - \boldsymbol{v}_i)`,
+    why: '把每一段的积分结果（第 ② 节）加起来' },
+  { tex: String.raw`=\sum_{i=1}^t e^{a_{t,i-1}}\big(\varphi_1(\delta_{t,i})-\varphi_2(\delta_{t,i})\big)\boldsymbol{v}_i + e^{a_{t,i-1}}\varphi_2(\delta_{t,i}) \boldsymbol{v}_{i-1}`,
+    why: '按 v_i 和 v_{i-1} 分别整理系数' },
+  { tex: String.raw`=\sum_{i=1}^t e^{a_{t,i}}\varphi_2(-\delta_{t,i})\boldsymbol{v}_i + e^{a_{t,i-1}}\varphi_2(\delta_{t,i}) \boldsymbol{v}_{i-1}`,
+    why: '用第 ③ 节的恒等式 φ₁−φ₂ = eˣφ₂(−x)，并注意 a_{i−1}+δ_i = a_i：蓝色那块改写成以右端点为基准' },
+  { tex: String.raw`=\sum_{i=1}^t e^{a_{t,i}}\varphi_2(-\delta_{t,i})\boldsymbol{v}_i + \sum_{i=0}^{t-1} e^{a_{t,i}}\varphi_2(\delta_{t,i+1}) \boldsymbol{v}_i`,
+    why: '第二个求和的下标平移 i → i+1，两项都变成“v_i 的系数”' },
+  { tex: String.raw`= e^{a_{t,0}}\varphi_2(\delta_{t,1}) \boldsymbol{v}_0 + e^{a_{t,t}}\varphi_2(-\delta_{t,t})\boldsymbol{v}_t + \sum_{i=1}^{t-1} e^{a_{t,i}} \big(\varphi_2(-\delta_{t,i}) + \varphi_2(\delta_{t,i+1})\big) \boldsymbol{v}_i`,
+    why: '首尾只出现在一个求和里，中间的 v_i 同时收到左段的蓝色份额和右段的橙色份额 —— 这就是下方动画' },
+]));
+
+const S4 = { T: 5, a: [], p: 0 };
+function rand4() { S4.a = [0]; for (let i = 1; i <= S4.T; i++) S4.a.push(+(VIZ.randn() * 0.8).toFixed(2)); }
+const draw4 = VIZ.onRender(() => {
+  const { T, a } = S4, b = corrections(a), ticks = VIZ.linspace(0, T, T + 1);
+  const yMax = Math.max(...a.map((x, i) => Math.exp(Math.max(x, x + b[i])))) * 1.1;
+  const cv = $('c4'), W = cv.clientWidth, H = cv.clientHeight, mid = H * 0.47;
+  const top = VIZ.plot(cv, { x: [0, T], y: [0, yMax], box: [0, 0, W, mid], m: { l: 50, r: 30, t: 18, b: 22 } }).axes({ xTicks: ticks });
+  const bot = VIZ.plot(cv, { keep: true, x: [0, T], y: [0, yMax], box: [0, mid, W, H], m: { l: 50, r: 30, t: 18, b: 28 } }).axes({ xTicks: ticks });
+  top.text('连续曲线 e^(a_s)：每段切成 橙(→左) + 蓝(→右)', top.L + 6, top.T, { px: true, align: 'left' });
+  bot.text('端点收集到的权重 e^(a_i+b_i)', bot.L + 6, bot.T, { px: true, align: 'left' });
+
+  const bw = Math.min(40, top.sx(1) * 0.42), ctx = top.ctx, stack = new Array(T + 1).fill(0), P = S4.p * T;
+  for (let i = 1; i <= T; i++) bot.bar(i, Math.exp(a[i]), { w: bw + 6, fill: null, stroke: C.base, dash: [4, 3] });
+  for (let j = 1; j <= T; j++) {
+    const u = VIZ.clamp(P - (j - 1), 0, 1), e = VIZ.ease.inOut(u), d = a[j] - a[j - 1];
+    const f = s => Math.exp(a[j - 1] + (s - j + 1) * d), lf = s => f(s) * (j - s), fade = 1 - 0.75 * Math.min(1, u * 1.5);
+    top.area(lf, 0, { from: j - 1, to: j, n: 80, fill: VIZ.alpha(C.pa, .7 * fade) })
+       .area(f, lf, { from: j - 1, to: j, n: 80, fill: VIZ.alpha(C.pb, .65 * fade) })
+       .fn(f, { from: j - 1, to: j, n: 80, color: C.new });
+    if (u > 0 && u < 1) { ctx.strokeStyle = C.text; ctx.lineWidth = 1; ctx.strokeRect(top.X(j - 1), top.T, top.sx(1), top.B - top.T); }
+    if (u <= 0) continue;
+    // 两块份额从段中心飞到各自端点，在下方堆叠
+    [[Math.exp(a[j - 1]) * phi2(d), C.pa, j - 1, -bw - 2], [Math.exp(a[j]) * phi2(-d), C.pb, j, 2]].forEach(([share, col, tgt, dx]) => {
+      const h = bot.sy(share), sx = top.X(j - .5) + dx, sy = top.B - h, tx = bot.X(tgt) - bw / 2, ty = bot.Y(stack[tgt]) - h;
+      const x = VIZ.lerp(sx, tx, e), y = VIZ.lerp(sy, ty, e);
+      ctx.fillStyle = VIZ.alpha(col, .9); ctx.fillRect(x, y, bw, h); ctx.strokeStyle = 'rgba(0,0,0,.35)'; ctx.strokeRect(x, y, bw, h);
+      if (u >= 1) stack[tgt] += share;
+    });
+  }
+  for (let i = 0; i <= T; i++) top.dot(i, Math.exp(a[i]), { r: 3.5 });
+
+  const pc = VIZ.softmax(a.map((x, i) => x + b[i])), ps = VIZ.softmax(a.map((x, i) => (i ? x : -Infinity)));
+  let rows = ` i    a_i      b_i     e^{a+b}   标准P    连续P\n`;
+  for (let i = 0; i <= T; i++) rows += `${String(i).padStart(2)}  ${fmt(a[i], 2)}  ${fmt(b[i], 3)}  ${fmt(Math.exp(a[i] + b[i]), 3)}  ${i ? fmt(ps[i], 3) : '   —  '}  <b>${fmt(pc[i], 3)}</b>\n`;
+  VIZ.readout('o4', rows + '注意：两端点 b ≈ log(1/2) = −0.693（只有一侧邻居）；内部点 b 在 0 附近，由邻居的差决定正负。');
+});
+VIZ.player({ button: 'b4play', range: 'r4p', label: 'v4p', ms: 1300 * S4.T, onUpdate: u => { S4.p = u; draw4(); } });
+$('b4rand').onclick = () => { rand4(); draw4(); };
+
+/* ================= ⑤ 注意力矩阵 ================= */
+const S5 = { T: 12, d: 16, Q: [], K: [], row: 8 };
+function rand5() {
+  const { T, d } = S5, rho = +$('s5corr').value; S5.Q = []; S5.K = [];
+  let prev = Array.from({ length: d }, () => VIZ.randn());
+  for (let i = 0; i <= T; i++) {
+    S5.Q.push(Array.from({ length: d }, () => VIZ.randn()));
+    const k = prev.map(x => rho * x + Math.sqrt(1 - rho * rho) * VIZ.randn()); S5.K.push(k); prev = k;
+  }
+}
+function compute5() {
+  const { T, d, Q, K } = S5, tau = VIZ.num('r5s');
+  const dot = (x, y) => x.reduce((s, xi, j) => s + xi * y[j], 0) * tau / Math.sqrt(d);
+  const k0 = $('s5k0').value === 'zero' ? new Array(d).fill(0) : K[1];
+  const out = { Ps: [], Pc: [], Pa: [], B: [] };
+  for (let t = 1; t <= T; t++) {
+    const a = [dot(Q[t], k0)]; for (let i = 1; i <= t; i++) a.push(dot(Q[t], K[i]));
+    const b = corrections(a), bA = b.map((bi, i) => (i === 0 || i === t ? bi : (a[i - 1] + a[i + 1] - 2 * a[i]) / 6));
+    out.B.push(b);
+    out.Ps.push(VIZ.softmax(a.map((x, i) => (i ? x : -Infinity))));
+    out.Pc.push(VIZ.softmax(a.map((x, i) => x + b[i])));
+    out.Pa.push(VIZ.softmax(a.map((x, i) => x + bA[i])));
+  }
+  return out;
+}
+const draw5 = VIZ.onRender(() => {
+  const { Ps, Pc, Pa, B } = compute5(), t = S5.row;
+  const common = { highlightRow: t - 1, colLabel: 'i → (key)', rowLabel: 't ↓ (query)', onClick: ({ r }) => { S5.row = r + 1; draw5(); } };
+  VIZ.heatmap('c5a', Ps, Object.assign({ mask: (r, c) => c === 0 || c > r + 1 }, common));
+  VIZ.heatmap('c5b', Pc, Object.assign({ mask: (r, c) => c > r + 1 }, common));
+  VIZ.heatmap('c5c', B, Object.assign({ mask: (r, c) => c > r + 1, color: v => VIZ.cmap.div(v, 1.2) }, common));
+
+  const ps = Ps[t - 1], pc = Pc[t - 1], pa = Pa[t - 1];
+  const p = VIZ.plot('c5d', { x: [-0.6, t + 0.6], y: [0, Math.max(...ps, ...pc, ...pa) * 1.15], m: { l: 40, r: 14, t: 18, b: 26 } })
+    .axes({ xTicks: VIZ.linspace(0, t, t + 1), yTicks: 'auto' });
+  p.text(`第 t=${t} 行的注意力权重`, p.L + 8, p.T, { px: true, align: 'left' });
+  const bw = p.sx(1) * 0.3;
+  for (let i = 0; i <= t; i++) {
+    if (i > 0) p.bar(i, ps[i], { w: bw, dx: -bw * 0.55, fill: VIZ.alpha(C.base, .85) });
+    p.bar(i, pc[i], { w: bw, dx: bw * 0.55, fill: VIZ.alpha(C.new, .9) });
+  }
+  p.path(pa.map((y, i) => [i + 0.12, y]), { color: C.approx, width: 1.5 });
+  pa.forEach((y, i) => p.dot(i + 0.12, y, { color: C.approx, r: 3 }));
+
+  const H = q => -q.reduce((s, x) => s + (x > 0 ? x * Math.log(x) : 0), 0);
+  const tv = pc.reduce((s, x, i) => s + Math.abs(x - pa[i]), 0) / 2;
+  VIZ.readout('o5',
+`第 t=${t} 行：熵 H(标准) = ${H(ps).toFixed(3)}   H(连续化) = ${H(pc).toFixed(3)}   （连续化通常更平滑 → 熵更高）
+精确 b 与 “二阶差分/6” 近似之间的总变差距离 = ${tv.toFixed(4)}   ${tv < 0.02 ? '<span class="ok">近似很好</span>' : '<span class="bad">分数尺度较大时高阶项不可忽略</span>'}
+第 0 列 = k₀,v₀（${$('s5k0').value === 'zero' ? '全零 ⇒ a_{t,0}=0，像一个 Sink token' : '复制 k₁,v₁'}）`);
+});
+VIZ.slider('r5s', draw5);
+$('s5k0').onchange = draw5;
+$('s5corr').onchange = () => { rand5(); draw5(); };
+$('b5rand').onclick = () => { rand5(); draw5(); };
+
+/* ================= ⑥ Short Conv ================= */
+const draw6 = VIZ.onRender(() => {
+  const a0 = VIZ.num('r6a'), a1 = VIZ.num('r6b'), a2 = VIZ.num('r6c');
+  const exact = Math.log(phi2(a0 - a1) + phi2(a2 - a1)), approx = (a0 + a2 - 2 * a1) / 6;
+  const cv = $('c6'), W = cv.clientWidth, H = cv.clientHeight;
+  // 上半：三个分数与修正后的值
+  const p = VIZ.plot(cv, { x: [-0.5, 4.5], y: [-3.4, 3.4], box: [0, 0, W, H / 2], m: { l: 20, r: 10, t: 10, b: 24 } });
+  p.hline(0, { color: C.line, dash: [] });
+  [['a_{i−1}', a0, C.muted], ['a_i', a1, C.text], ['a_{i+1}', a2, C.muted], ['a_i+b_i', a1 + exact, C.new], ['≈卷积', a1 + approx, C.approx]]
+    .forEach(([n, v, c], k) => { p.bar(k, v, { w: p.sx(1) * 0.5, fill: VIZ.alpha(c, .85), label: v.toFixed(2) }); p.text(n, p.X(k), p.B + 18, { px: true }); });
+  // 下半：对称邻居时的精确 b 与一阶近似
+  const q = VIZ.plot(cv, { keep: true, x: [-4, 4], y: [-2.2, 2.2], box: [0, H / 2, W, H], m: { l: 40, r: 14, t: 22, b: 22 } })
+    .axes({ xTicks: [-4, -2, 0, 2, 4], zero: true });
+  q.fn(x => Math.log(2 * phi2(x)), { color: C.new }).fn(x => x / 3, { color: C.approx, dash: [5, 4] });
+  const dd = (a0 + a2 - 2 * a1) / 2;
+  q.dot(VIZ.clamp(dd, -4, 4), Math.log(2 * phi2(dd)), { r: 4 });
+  q.text('对称邻居 d₁=d₂=x：b = log 2φ₂(x)（紫） vs  x/3（黄虚）', q.L + 4, q.T - 6, { px: true, align: 'left' });
+  VIZ.readout('o6',
+`二阶差分 Δ² = a_{i−1}+a_{i+1}−2a_i = ${fmt(a0 + a2 - 2 * a1, 3)}
+b_i 精确值     = log(φ₂(a_{i−1}−a_i)+φ₂(a_{i+1}−a_i)) = <b>${fmt(exact)}</b>
+b_i 一阶近似   = Δ²/6 = ${fmt(approx)}    误差 ${Math.abs(exact - approx).toFixed(4)}
+⇒ 峰值被“削低”，谷值被“填高”：沿 key 方向的平滑（Short Conv）`);
+});
+['r6a', 'r6b', 'r6c'].forEach(id => VIZ.slider(id, draw6));
+
+/* ================= ⑦ 示意训练曲线 ================= */
+let p7 = 1;
+const base7 = x => 2.5 + 1.6 * Math.exp(-5 * x);
+const draw7 = VIZ.onRender(() => VIZ.schematic('c7', {
+  y: [2.2, 4.2], progress: p7, xLabel: '训练步数 →', yLabel: 'Loss（示意）', marks: [{ x: .45, label: '切换点' }],
+  curves: [
+    { name: '标准 + RoPE', color: C.base, f: base7 },
+    { name: '连续化 + RoPE', color: C.new, f: x => base7(x) - 0.13 * Math.exp(-4 * x) * (1 - Math.exp(-40 * x)) },
+    { name: '连续化 无RoPE', color: C.warn, f: x => base7(x) + 0.12 * (1 - Math.exp(-6 * x)), dash: [6, 4] },
+    { name: '中途切换', color: C.approx, f: x => (x < 0.45 ? base7(x) : base7(x) + 0.06 * Math.exp(-14 * (x - 0.45))), dash: [2, 3] },
+  ],
+}));
+$('b7play').onclick = () => VIZ.animate(3000, u => { p7 = u; draw7(); });
+
+rand1(); rand4(); rand5();
+VIZ.start();
+</script>

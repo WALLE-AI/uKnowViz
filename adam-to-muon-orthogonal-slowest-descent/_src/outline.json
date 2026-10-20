@@ -1,0 +1,23 @@
+{
+  "slug": "adam-to-muon-orthogonal-slowest-descent",
+  "title": "慢即是快：Adam 的尽头还是 Muon？",
+  "source": {"url": "https://kexue.fm/archives/11964", "author": "苏剑林", "site": "kexue.fm"},
+  "hook": "如果允许 Adam 自己挑一个“最好的坐标系”，它会变成什么？",
+  "one_liner": "正交最慢下降会洗掉对角/Kronecker 预条件的基底：更新量 Φ = U D Vᵀ，只剩奇异值可调（尽头是 Muon 的第一重含义）；D 是否均匀只能启发式猜测（第二重含义）",
+  "main_analogy": "调音台：梯度 G 有自己的“声道”（奇异向量）；Adam 在固定的格子上逐格调音量；允许转动格子后，最好的方案只能沿 G 自己的声道调音量",
+  "demo_choice": "全部用 2×2 矩阵：正交矩阵 = 旋转角 θ、φ，整个搜索空间是一张 θ×φ 的地形图，可以穷举并数值验证文章的每个结论",
+  "sections": [
+    {"id": "s1", "title": "给 Adam 换坐标系：转过去、逐格缩放、转回来",
+      "viz": {"recipe": "5 张 2×2 矩阵热力图流水线", "controls": ["θ", "φ", "随机 N"], "readout": "θ=φ=0 时等于 N⊙G；tr(GᵀΦ) = ‖N^{⊙/2}⊙Z‖² ✓"}},
+    {"id": "s2", "title": "最好的坐标系在哪：目标地形与驻点条件",
+      "viz": {"recipe": "F 热力图 + H 迭代轨迹", "moves": "θ×φ 地形上梯度下降落到最低点", "controls": ["对角/Kronecker 切换", "点击地形", "播放下降", "随机起点"], "readout": "两个对称性条件的不对称度 → 0 ✓"}},
+    {"id": "s3", "title": "洗去基底：Φ 的奇异向量 = G 的奇异向量",
+      "viz": {"recipe": "G 向量与椭圆（输入空间 V / 输出空间 U）", "moves": "走到驻点时紫色椭圆的轴转到与绿色重合", "readout": "UᵀΦV 的非对角占比 → 0 ✓；D 的值"}},
+    {"id": "s4", "title": "奇异值会均匀吗：均值不等式的启发",
+      "viz": {"recipe": "C 函数 + 三个标记点", "controls": ["σ₁", "σ₂", "d₁/d₂"], "readout": "最小值在 d∝1/σ ✓；D∝I 是两端的几何平均；本例实际最优 D 的位置 λ（标注为本页数值观察）"}},
+    {"id": "s5", "title": "谱之乘积：行列式是否守恒",
+      "viz": {"recipe": "|det Φ| 随 θ 的曲线族", "readout": "Kronecker 方阵：恒定 ✓；对角：会变化（“信仰”并不精确）"}}
+  ],
+  "experiments": [],
+  "glossary": ["优化器", "梯度矩阵", "预条件", "对角近似/RMSProp/Adam", "Kronecker 积/Shampoo", "Hadamard 积", "正交矩阵", "SVD/奇异值/奇异向量", "Muon", "正交最慢下降", "迹", "Frobenius 范数", "拉格朗日乘子", "驻点", "均值不等式", "行列式"]
+}

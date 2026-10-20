@@ -1,0 +1,1105 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>慢即是快：Adam 的尽头还是 Muon？ · 可视化解读</title>
+<!-- 首页索引（build_index.py）读取以下 viz:* 元信息 -->
+<meta name="viz:title" content="慢即是快：Adam 的尽头还是 Muon？">
+<meta name="viz:summary" content="对角预条件（Adam/RMSProp）在正交最慢下降下，原有基底被洗掉：更新量的奇异向量退化为梯度的奇异向量，只剩奇异值可调——与 Muon 如出一辙。">
+<meta name="viz:source" content="https://kexue.fm/archives/11964">
+<meta name="viz:author" content="苏剑林（科学空间）">
+<meta name="viz:date" content="2026-10-20">
+<meta name="viz:tags" content="优化器,Adam,Muon,SVD">
+<!-- KaTeX：优先本地 _lib，失败时 viz-core 自动回退 CDN -->
+<link rel="stylesheet" href="../_lib/katex/katex.min.css">
+<script src="../_lib/katex/katex.min.js"></script>
+<script src="../_lib/katex/contrib/auto-render.min.js"></script>
+<style>
+/* ==== viz-core.css（内联快照，勿手改；页面专属样式写在下方） ==== */
+/* viz-core.css — uKnowViz 共享样式 v1
+ * 语义配色：颜色代表“角色”而不是装饰，全站一致（见 references/style-guide.md）
+ */
+:root{
+  --bg:#0e1120; --panel:#161a2e; --panel2:#1d2240; --line:#2a3058;
+  --text:#e6e8f2; --muted:#9aa0bf; --dim:#646a8c;
+  --new:#b197fc;     /* 文章提出的新方法 / 主角 */
+  --base:#69db7c;    /* 基线 / 标准做法 / 正确 ✓ */
+  --pa:#f59f4c;      /* 一分为二时的 A 部分（左 / 第一项） */
+  --pb:#4dabf7;      /* 一分为二时的 B 部分（右 / 第二项） */
+  --approx:#ffd43b;  /* 近似值 / 辅助量 / 输入数据 */
+  --warn:#ff8787;    /* 负面结果 / 误差 / 警告 */
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--text);
+  font-family:"PingFang SC","Microsoft YaHei","Noto Sans SC",system-ui,sans-serif;line-height:1.7}
+a{color:var(--pb)}
+b,strong{color:#fff}
+
+/* ---------- 页首 / 导航 / 页脚 ---------- */
+header.hero{padding:56px 24px 32px;text-align:center;
+  background:radial-gradient(ellipse at top,#262d5c 0%,var(--bg) 70%)}
+header.hero h1{font-size:2.2rem;margin:0 0 8px;letter-spacing:.04em}
+header.hero p{color:var(--muted);margin:4px 0}
+header.hero .src{font-size:.85rem}
+nav.toc{position:sticky;top:0;z-index:10;background:rgba(14,17,32,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--line);display:flex;gap:4px;justify-content:center;flex-wrap:wrap;padding:8px}
+nav.toc a{color:var(--muted);text-decoration:none;font-size:.88rem;padding:4px 10px;border-radius:6px}
+nav.toc a:hover{background:var(--panel2);color:var(--text)}
+main{max-width:1080px;margin:0 auto;padding:12px 20px 80px}
+footer{color:var(--dim);text-align:center;font-size:.85rem;padding:30px}
+
+/* ---------- 章节 ---------- */
+section{margin:44px 0;scroll-margin-top:56px}
+h2{font-size:1.45rem;border-left:4px solid var(--new);padding-left:12px;margin:0 0 14px}
+h2 .num{color:var(--new);margin-right:8px}
+h3{font-size:1.1rem;margin:10px 0 6px;color:#fff}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px 20px;margin:14px 0}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+@media(max-width:820px){.grid2,.grid3{grid-template-columns:1fr}}
+
+/* ---------- 画布与控件 ---------- */
+canvas{width:100%;display:block;border-radius:10px;background:#11152a}
+canvas.clickable{cursor:pointer}
+.cap{color:var(--muted);font-size:.85rem;text-align:center;margin:2px 0}
+.controls{display:flex;flex-wrap:wrap;gap:10px 18px;align-items:center;margin:12px 0 4px;font-size:.92rem}
+.controls label{display:flex;align-items:center;gap:8px;color:var(--muted)}
+.controls input[type=range]{width:150px;accent-color:var(--new)}
+.controls select{background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:3px 6px}
+button{background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:8px;
+  padding:6px 14px;cursor:pointer;font-size:.9rem;font-family:inherit}
+button:hover{border-color:var(--new)}
+button.primary{background:var(--new);color:#14112a;border:none;font-weight:600}
+.val{font-family:Consolas,Menlo,monospace;color:var(--text);min-width:3.5em;display:inline-block}
+
+/* 图例：<span><i class="sw new"></i>说明</span> */
+.legend{display:flex;flex-wrap:wrap;gap:14px;font-size:.85rem;color:var(--muted);margin-top:8px}
+.legend i{display:inline-block;width:12px;height:12px;border-radius:3px;margin-right:6px;vertical-align:-1px}
+.sw.new{background:var(--new)} .sw.base{background:var(--base)} .sw.pa{background:var(--pa)}
+.sw.pb{background:var(--pb)} .sw.approx{background:var(--approx)} .sw.warn{background:var(--warn)}
+.sw.text{background:var(--text)} .sw.dashed{background:none;border:2px dashed var(--base)}
+
+/* 实时数值读数 */
+.readout{font-family:Consolas,Menlo,monospace;font-size:.88rem;background:#0f1326;border-radius:8px;
+  padding:10px 12px;margin-top:10px;white-space:pre-wrap;color:#cfd3ee;overflow-x:auto}
+.readout b{color:var(--new)}
+.ok{color:var(--base)} .bad{color:var(--warn)}
+
+/* ---------- 文字层 ---------- */
+.note{color:var(--muted);font-size:.92rem}
+.key{background:linear-gradient(90deg,rgba(177,151,252,.14),rgba(77,171,247,.06));
+  border:1px solid rgba(177,151,252,.35);border-radius:12px;padding:12px 16px;margin:12px 0}
+.plain{background:linear-gradient(135deg,rgba(105,219,124,.10),rgba(255,212,59,.06));
+  border:1px solid rgba(105,219,124,.35);border-radius:12px;padding:12px 18px 12px 16px;margin:12px 0;font-size:.97rem}
+.plain::before{content:"🧒 通俗地说";display:block;font-weight:700;color:var(--base);margin-bottom:4px}
+.plain.how::before{content:"👀 怎么看这张图";color:var(--approx)}
+.plain ul,.plain ol{margin:4px 0;padding-left:1.3em}
+.schematic-note{color:var(--muted);font-size:.88rem}
+.schematic-note::before{content:"⚠️ 示意图：";color:var(--warn);font-weight:600}
+
+/* 三联比喻卡 */
+.analogy{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:10px 0}
+@media(max-width:820px){.analogy{grid-template-columns:1fr}}
+.analogy>div{background:var(--panel2);border-radius:10px;padding:12px 14px}
+.analogy .ico{font-size:1.8rem}
+.analogy b{color:var(--new)}
+
+/* 实验卡 */
+.tag{display:inline-block;font-size:.75rem;padding:1px 8px;border-radius:99px;border:1px solid var(--line);color:var(--muted)}
+.stat{font-size:2rem;font-weight:700;color:var(--new)}
+
+/* 表格 / 术语表 */
+table{border-collapse:collapse;width:100%;font-size:.9rem}
+td,th{border-bottom:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+th{color:var(--muted);font-weight:500}
+dl.gloss{display:grid;grid-template-columns:170px 1fr;gap:8px 14px;margin:0}
+dl.gloss dt{color:var(--new);font-weight:600}
+dl.gloss dd{margin:0;color:#cfd3ee}
+@media(max-width:820px){dl.gloss{grid-template-columns:1fr}}
+
+/* 公式分步展开器（VIZ.stepper） */
+.stepper .step{padding:6px 10px;border-left:3px solid transparent;border-radius:6px;margin:4px 0;transition:all .35s}
+.stepper .step.cur{border-left-color:var(--new);background:rgba(177,151,252,.08)}
+.stepper .step.hidden{display:none}
+.stepper .step .why{color:var(--muted);font-size:.9rem;margin-left:4px}
+.katex-display{overflow-x:auto;overflow-y:hidden;padding:4px 0}
+
+/* 运行时错误横幅（VIZ 捕获的 JS 错误，便于自检） */
+#viz-errors{position:fixed;bottom:0;left:0;right:0;background:#5c1a1a;color:#fff;font:12px Consolas,monospace;
+  padding:6px 12px;z-index:99;white-space:pre-wrap;display:none}
+
+/* ---------- 首页索引 ---------- */
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:16px}
+.cards a.item{display:block;text-decoration:none;color:var(--text);background:var(--panel);border:1px solid var(--line);
+  border-radius:14px;padding:16px 18px;transition:border-color .2s,transform .2s}
+.cards a.item:hover{border-color:var(--new);transform:translateY(-2px)}
+.cards .item h3{margin:0 0 6px;color:#fff}
+.cards .item p{margin:0 0 8px;color:var(--muted);font-size:.9rem}
+.cards .item .meta{font-size:.78rem;color:var(--dim)}
+
+/* ==== 页面专属样式 ==== */
+.pipe{display:grid;grid-template-columns:repeat(5,1fr);gap:8px}
+@media(max-width:820px){.pipe{grid-template-columns:repeat(2,1fr)}}
+</style>
+</head>
+<body>
+<header class="hero">
+  <h1>慢即是快：Adam 的尽头还是 Muon？</h1>
+  <p>如果允许 Adam 自己挑一个“最好的坐标系”，它会变成什么？</p>
+  <p class="src">解读自 苏剑林（科学空间）《<a href="https://kexue.fm/archives/11964" target="_blank">慢即是快：2. Adam的尽头还是Muon？</a>》</p>
+</header>
+<nav class="toc">
+  <a href="#s0">⓪ 大白话版</a><a href="#s1">① 换坐标系</a><a href="#s2">② 最优坐标系</a><a href="#s3">③ 洗去基底</a>
+  <a href="#s4">④ 均匀吗</a><a href="#s5">⑤ 行列式</a><a href="#summary">小结</a><a href="#gloss">📖 术语表</a>
+</nav>
+<main>
+
+<!-- ================= ⓪ ================= -->
+<section id="s0">
+  <h2><span class="num">⓪</span>先用大白话理解：这篇文章在讲什么？</h2>
+  <div class="card">
+    <p>训练神经网络时，每一步都要根据<b>梯度</b>（“往哪个方向改参数，损失下降最快”）更新参数。负责“怎么根据梯度迈步”的算法叫<b>优化器</b>。对一层网络来说，梯度不是一个数，而是一整张数字表格，也就是矩阵 $\boldsymbol{G}$。这篇文章比较了三类优化器：</p>
+    <div class="analogy">
+      <div><div class="ico">🎚️</div><b>Adam / RMSProp（对角预条件）</b><br>给表格的<b>每一格</b>单独配一个步长：$\boldsymbol{N}\odot\boldsymbol{G}$。格子是按固定坐标划分的。</div>
+      <div><div class="ico">🧮</div><b>Shampoo（Kronecker 积预条件）</b><br>从左右各乘一个矩阵：$\boldsymbol{P}\boldsymbol{G}\boldsymbol{Q}$，让行与行、列与列之间互相混合。</div>
+      <div><div class="ico">🧭</div><b>Muon</b><br>只保留梯度的<b>“方向”</b>（奇异向量），把各方向的“力度”（奇异值）统一成 1：$\boldsymbol{U}\boldsymbol{V}^{\top}$。</div>
+    </div>
+    <div class="plain">
+      <p style="margin-top:0">把梯度 $\boldsymbol{G}$ 想象成一台<b>拉伸机器</b>：先转一下，再沿两根“主轴”拉伸不同的倍数，最后再转一下。这就是奇异值分解 $\boldsymbol{G}=\boldsymbol{U}\boldsymbol{\Sigma}\boldsymbol{V}^{\top}$。主轴是梯度自带的“方向”，拉伸倍数是“力度”。</p>
+      <p>Adam 在一张<b>固定的方格纸</b>上逐格调节力度，但方格纸的朝向是人为定的，和梯度自己的主轴毫无关系。作者问：<b>如果允许把方格纸任意转动，并按“正交最慢下降”原则挑出最好的朝向，结果会怎样？</b></p>
+      <p>答案：挑出来的最好方案里，方格纸原本的朝向<b>完全不留痕迹</b>。更新量的“方向”一定就是梯度自己的主轴，能调的只剩各主轴上的力度。这正是 Muon 的构造方式。</p>
+    </div>
+    <div class="key">
+      <b>🎯 一句话结论：</b>不管是 Shampoo 式（Kronecker 积）还是 Adam 式（对角）预条件，一旦用“正交最慢下降”去挑坐标系，更新量的左右奇异向量都会退化成梯度的奇异向量，只剩奇异值可调。这是“尽头是 Muon”的<b>第一重含义</b>（有证明）。至于剩下的奇异值是否会趋于均匀（第二重含义），作者只给出了启发式猜测，并坦言对 Adam 情形这个猜测“很无力”。<br>
+      <b>📉 实验结果：</b>原文是纯理论推导，没有训练实验。本页所有数字都来自在 2×2 小矩阵上的现场计算，用来直观验证文中的结论。
+    </div>
+    <p class="note">为什么用 2×2？因为 2×2 的正交矩阵就是一个旋转角度，整个“挑坐标系”的搜索空间正好是一张 $\theta\times\phi$ 的地图，可以画出来、走一遍。代价是小矩阵不能代表大模型里的情形，涉及“趋势”的观察只供感受。</p>
+  </div>
+</section>
+
+<!-- ================= ① ================= -->
+<section id="s1">
+  <h2><span class="num">①</span>给 Adam 换个坐标系：转过去、逐格缩放、转回来</h2>
+  <div class="grid2">
+    <div class="card">
+      <p>记梯度 $\boldsymbol{G}\in\mathbb{R}^{n\times m}$，引入 $\boldsymbol{N}\in\mathbb{R}_+^{n\times m}$。对角近似是指预条件矩阵 $\boldsymbol{H}^{-1}=\mathop{\text{diag}}(\mathop{\text{vec}}(\boldsymbol{N}))$，此时</p>
+      $$\boldsymbol{H}^{-1} \boldsymbol{g} = \mathop{\text{vec}}(\boldsymbol{N}\odot\boldsymbol{G})$$
+      <p>即更新规则为 $\boldsymbol{W} - \eta \boldsymbol{N}\odot\boldsymbol{G}$（$\odot$ 是逐元素的 Hadamard 积）。</p>
+      <p>引入正交矩阵 $\boldsymbol{X}\in\mathbb{R}^{n\times n},\boldsymbol{Y}\in\mathbb{R}^{m\times m}$，令 $\boldsymbol{O} = \boldsymbol{Y}\otimes\boldsymbol{X}$，把预条件换成 $\boldsymbol{O}^{\top}\mathop{\text{diag}}(\mathop{\text{vec}}(\boldsymbol{N}))\boldsymbol{O}$，更新量就从 $\boldsymbol{N}\odot\boldsymbol{G}$ 变成</p>
+      $$\boldsymbol{\Phi}=\boldsymbol{X}^{\top}(\boldsymbol{N}\odot\boldsymbol{X}\boldsymbol{G}\boldsymbol{Y}^{\top})\boldsymbol{Y}$$
+      <p>直观地说：给 $\boldsymbol{G}$ 找一组新的正交基，在新基上做对角预条件，再变换回来。</p>
+    </div>
+    <div class="card">
+      <p>根据<b>正交最慢下降</b>原理（上一篇从凸优化的平均收敛结论出发建立的框架，系列名“慢即是快”即由此而来），要在所有正交变换中，选出让更新量与 $\boldsymbol{G}$ 的内积<b>最小</b>的那个：</p>
+      $$\min_{\boldsymbol{X},\boldsymbol{Y}} \mathop{\text{tr}}(\boldsymbol{G}^{\top}\boldsymbol{X}^{\top}(\boldsymbol{N}\odot\boldsymbol{X}\boldsymbol{G}\boldsymbol{Y}^{\top})\boldsymbol{Y})\qquad\text{s.t.}\qquad \boldsymbol{X}^{\top}\boldsymbol{X} = \boldsymbol{I}_n,\quad \boldsymbol{Y}^{\top}\boldsymbol{Y} = \boldsymbol{I}_m$$
+      <p>目标函数可以化简（逐步展开）：</p>
+      <div id="st1" class="card" style="background:var(--panel2)"></div>
+      <p>上一篇的 Kronecker 积情形，目标是 $\Vert\boldsymbol{P}^{1/2}\boldsymbol{X}\boldsymbol{G}\boldsymbol{Y}^{\top}\boldsymbol{Q}^{1/2}\Vert_F^2$。两者都具有 $f(\boldsymbol{X} \boldsymbol{G} \boldsymbol{Y}^{\top})$ 的形式，所以可以统一考虑</p>
+      $$\min_{\boldsymbol{X}, \boldsymbol{Y}} f(\boldsymbol{X} \boldsymbol{G} \boldsymbol{Y}^{\top}) \qquad\text{s.t.}\qquad \boldsymbol{X}^{\top}\boldsymbol{X} = \boldsymbol{I}_n,\quad \boldsymbol{Y}^{\top}\boldsymbol{Y} = \boldsymbol{I}_m$$
+    </div>
+  </div>
+  <div class="card">
+    <div class="pipe">
+      <div><div class="cap">$\boldsymbol{G}$ 梯度</div><canvas id="c1a" style="height:150px"></canvas></div>
+      <div><div class="cap">$\boldsymbol{Z}=\boldsymbol{X}\boldsymbol{G}\boldsymbol{Y}^{\top}$ 转到新坐标</div><canvas id="c1b" style="height:150px"></canvas></div>
+      <div><div class="cap">$\boldsymbol{N}$ 逐格步长</div><canvas id="c1c" style="height:150px"></canvas></div>
+      <div><div class="cap">$\boldsymbol{N}\odot\boldsymbol{Z}$ 逐格缩放</div><canvas id="c1d" style="height:150px"></canvas></div>
+      <div><div class="cap">$\boldsymbol{\Phi}$ 转回原坐标</div><canvas id="c1e" style="height:150px"></canvas></div>
+    </div>
+    <div class="controls">
+      <label>$\boldsymbol{X}$ 的旋转角 $\theta$ <input type="range" id="c1-th" min="0" max="3.1416" step="0.01" value="0.6"><span class="val" data-for="c1-th"></span></label>
+      <label>$\boldsymbol{Y}$ 的旋转角 $\phi$ <input type="range" id="c1-ph" min="0" max="3.1416" step="0.01" value="1.9"><span class="val" data-for="c1-ph"></span></label>
+      <button id="c1-zero">令 $\theta=\phi=0$（原版 Adam）</button>
+    </div>
+    <div class="legend"><span><i class="sw warn"></i>正数</span><span><i class="sw pb"></i>负数（颜色越深绝对值越大）</span></div>
+    <div class="readout" id="c1-out"></div>
+    <div class="plain how">
+      <ul>
+        <li>五个小方阵从左到右就是一次更新的流水线：梯度 → 转到新坐标 → 每格乘上自己的步长 → 转回来。</li>
+        <li>点“令 θ=φ=0”：不转动，结果就是原版 Adam 的 $\boldsymbol{N}\odot\boldsymbol{G}$。</li>
+        <li>拖动两个角度：同一个 $\boldsymbol{N}$、同一个 $\boldsymbol{G}$，换了坐标系后得到的更新量完全不同。读数里的“内积”就是正交最慢下降要最小化的目标。</li>
+      </ul>
+    </div>
+    <div class="plain">
+      Adam 的“逐格调步长”听起来很灵活，但它<b>依赖于格子怎么划</b>：同样的调节方案，在转过的方格纸上做，效果就变了。既然如此，自然要问：方格纸转到哪个角度最好？这一节先把这个问题写成数学形式；下一节就在地图上把最好的角度找出来。
+    </div>
+  </div>
+</section>
+
+<!-- ================= ② ================= -->
+<section id="s2">
+  <h2><span class="num">②</span>最好的坐标系在哪？目标地形与驻点条件</h2>
+  <div class="grid2">
+    <div class="card">
+      <p>引入拉格朗日乘子 $\boldsymbol{A},\boldsymbol{B}$，定义</p>
+      $$F = f(\boldsymbol{X} \boldsymbol{G} \boldsymbol{Y}^{\top}) - \mathop{\text{tr}}(\boldsymbol{A}^{\top}(\boldsymbol{X}^{\top}\boldsymbol{X} - \boldsymbol{I}_n)) - \mathop{\text{tr}}(\boldsymbol{B}^{\top}(\boldsymbol{Y}^{\top}\boldsymbol{Y} - \boldsymbol{I}_m))$$
+      <p>记 $\boldsymbol{Z} = \boldsymbol{X} \boldsymbol{G} \boldsymbol{Y}^{\top}, \boldsymbol{K} = \nabla_{\boldsymbol{Z}} f(\boldsymbol{Z})$，令梯度为零：</p>
+      $$\nabla_{\boldsymbol{X}} F = \boldsymbol{K} \boldsymbol{Y} \boldsymbol{G}^{\top} - \boldsymbol{X}(\boldsymbol{A} + \boldsymbol{A}^{\top}) = \boldsymbol{0},\qquad \nabla_{\boldsymbol{Y}} F = \boldsymbol{K}^{\top} \boldsymbol{X} \boldsymbol{G} - \boldsymbol{Y}(\boldsymbol{B} + \boldsymbol{B}^{\top}) = \boldsymbol{0}$$
+      <p>两式分别左乘 $\boldsymbol{X}^{\top}$、$\boldsymbol{Y}^{\top}$，利用正交性得到驻点条件：</p>
+      $$\boldsymbol{X}^{\top}\boldsymbol{K}\boldsymbol{Y}\boldsymbol{G}^{\top}\,\,\text{对称},\qquad\boldsymbol{G}^{\top}\boldsymbol{X}^{\top}\boldsymbol{K}\boldsymbol{Y}\,\,\text{对称}$$
+      <p>上一篇已证明：这意味着 $\boldsymbol{X}^{\top}\boldsymbol{K}\boldsymbol{Y}$ 具有 $\boldsymbol{U}\boldsymbol{D}\boldsymbol{V}^{\top}$ 的形式，其中 $\boldsymbol{U}\boldsymbol{\Sigma}\boldsymbol{V}^{\top}$ 是 $\boldsymbol{G}$ 的 SVD，$\boldsymbol{D}$ 是对角阵。这是所有最优解的共同特征，<b>与 $f$ 的具体选择无关</b>。</p>
+    </div>
+    <div class="card">
+      <canvas id="c2" style="height:360px"></canvas>
+      <div class="controls">
+        <button class="primary" id="c2-play">▶ 播放：沿地形下降</button>
+        <label>进度 <input type="range" id="c2-t" min="0" max="1" step="0.001" value="0"><span class="val" id="c2-tv">0%</span></label>
+      </div>
+      <div class="controls">
+        <label>预条件 <select id="c2-mode"><option value="diag">对角（Adam / RMSProp）</option><option value="kron">Kronecker 积（Shampoo）</option></select></label>
+        <button id="c2-best">跳到最低点</button><button id="c2-rand">🎲 换一个例子</button>
+      </div>
+      <div class="legend"><span><i class="sw" style="background:#f0f921"></i>亮 = 目标值大</span><span><i class="sw" style="background:#0d0887"></i>暗 = 目标值小</span><span><i class="sw text"></i>白线：下降轨迹</span><span><i class="sw base"></i>绿圈：最低点</span></div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="readout" id="c2-out"></div>
+    <div class="plain how">
+      <ul>
+        <li>地图上每个点是一种坐标系选择：纵向是 $\boldsymbol{X}$ 的旋转角 $\theta$，横向是 $\boldsymbol{Y}$ 的旋转角 $\phi$。颜色是目标值 $\mathop{\text{tr}}(\boldsymbol{G}^{\top}\boldsymbol{\Phi})$，越暗越好。</li>
+        <li><b>点击地图任意位置</b>设为起点，再点 <b>▶ 播放</b>，白线就是从起点顺着坡往下走的轨迹，终点落在绿圈（最低点）。</li>
+        <li>读数里的两个“不对称度”对应上面的两个驻点条件：在起点它们明显大于 0；走到最低点后都降到接近 0。</li>
+        <li>切换“预条件”到 Kronecker 积：地形完全变了，但走到底时驻点条件同样成立。这就是“与 $f$ 无关”。</li>
+      </ul>
+    </div>
+    <div class="plain">
+      想象你在调一台相机三脚架的两个旋钮（$\theta$ 和 $\phi$），想找到让某个读数最小的角度。地形图把每种旋钮组合的读数都画了出来，下降轨迹就是一路往读数小的方向拧。
+      文章的厉害之处在于，它不需要知道最低点<b>具体在哪</b>，就能说出最低点<b>长什么样</b>：那里的更新量，一定和梯度共享同一套主轴。下一节就去最低点验证这件事。
+    </div>
+  </div>
+</section>
+
+<!-- ================= ③ ================= -->
+<section id="s3">
+  <h2><span class="num">③</span>洗去基底：更新量的“方向”只能是梯度自己的方向</h2>
+  <div class="card">
+    <p>对上一篇的 Kronecker 积目标 $\Vert\boldsymbol{P}^{1/2}\boldsymbol{X}\boldsymbol{G}\boldsymbol{Y}^{\top}\boldsymbol{Q}^{1/2}\Vert_F^2$，$\boldsymbol{K} = 2\boldsymbol{P}\boldsymbol{X}\boldsymbol{G}\boldsymbol{Y}^{\top}\boldsymbol{Q}$，更新量 $\boldsymbol{\Phi} = \boldsymbol{X}^{\top}\boldsymbol{P}\boldsymbol{X}\boldsymbol{G}\boldsymbol{Y}^{\top}\boldsymbol{Q}\boldsymbol{Y} = \boldsymbol{X}^{\top}\boldsymbol{K}\boldsymbol{Y}/2$。对本文的对角目标 $\Vert\boldsymbol{N}^{\odot/2}\odot\boldsymbol{X}\boldsymbol{G}\boldsymbol{Y}^{\top}\Vert_F^2$，$\boldsymbol{K} = 2\boldsymbol{N}\odot\boldsymbol{X}\boldsymbol{G}\boldsymbol{Y}^{\top}$，更新量</p>
+    $$\boldsymbol{\Phi} = \boldsymbol{X}^{\top}(\boldsymbol{N}\odot\boldsymbol{X}\boldsymbol{G}\boldsymbol{Y}^{\top})\boldsymbol{Y} = \boldsymbol{X}^{\top}\boldsymbol{K}\boldsymbol{Y}/2$$
+    <p>两种情形下，$\boldsymbol{\Phi}$ 都等于 $\boldsymbol{X}^{\top}\boldsymbol{K}\boldsymbol{Y}/2$，所以由驻点条件，$\boldsymbol{\Phi}$ 具有 $\boldsymbol{U}\boldsymbol{D}\boldsymbol{V}^{\top}$ 的形式：<b>预条件矩阵的“基”被正交最慢下降洗掉</b>，更新量的左、右奇异矩阵一律退化为梯度（或动量）的左、右奇异矩阵，预条件至多只能改变奇异值。这与 Muon 的构造如出一辙，是“尽头是 Muon”的第一重含义。</p>
+    <canvas id="c3" style="height:340px"></canvas>
+    <div class="legend">
+      <span><i class="sw base"></i>梯度 $\boldsymbol{G}$ 的奇异向量 / 椭圆</span>
+      <span><i class="sw new"></i>更新量 $\boldsymbol{\Phi}$ 的奇异向量 / 椭圆</span>
+      <span><i class="sw approx"></i>Muon 更新 $\boldsymbol{U}\boldsymbol{V}^{\top}$（圆）</span>
+    </div>
+    <div class="readout" id="c3-out"></div>
+    <div class="plain how">
+      <ul>
+        <li>这张图与第 ② 节的地图<b>联动</b>：显示的是地图上白线当前位置对应的更新量。</li>
+        <li><b>左图（输入方向）</b>：单位圆上的箭头是右奇异向量 $\boldsymbol{V}$。<b>右图（输出形状）</b>：把单位圆送进矩阵后得到的椭圆，长短轴就是左奇异向量 $\boldsymbol{U}$ 乘以奇异值。两个椭圆都按各自的最大奇异值缩放到同一大小，方便比较朝向。</li>
+        <li>回到第 ② 节，拖动进度条从 0% 到 100%：紫色箭头和紫色椭圆会<b>逐渐转到与绿色重合</b>，读数里的“非对角占比”降到接近 0。</li>
+      </ul>
+    </div>
+    <div class="plain">
+      还是拉伸机器的比喻：$\boldsymbol{G}$ 有自己的两根主轴。任意选一个坐标系做 Adam 式的逐格调节，得到的更新量会把主轴“拧歪”（紫色椭圆是斜的）。但在最好的坐标系下，更新量的主轴<b>恰好和梯度的主轴重合</b>，只是两根轴上的拉伸倍数变了。
+      也就是说，无论 $\boldsymbol{N}$ 是什么样子，它原本的“格子朝向”都被洗得一干二净，能留下的影响只有“各方向使多大劲”。而 Muon 正是“方向用梯度的，力度全部设成 1”（黄色的圆）。
+    </div>
+  </div>
+</section>
+
+<!-- ================= ④ ================= -->
+<section id="s4">
+  <h2><span class="num">④</span>剩下的奇异值会变均匀吗？一个启发式论证</h2>
+  <div class="grid2">
+    <div class="card">
+      <p>如果能证明 $\boldsymbol{D}$ 的对角元趋于均衡，就和 Muon 更加趋同了，这是“尽头是 Muon”的第二重含义。设 $n\geq m$，</p>
+      $$\mathop{\text{tr}}(\boldsymbol{G}^{\top}\boldsymbol{\Phi}) = \mathop{\text{tr}}(\boldsymbol{\Sigma}^{\top} \boldsymbol{D}) = \sum_{i=1}^m \sigma_i d_i \geq m\left(\prod_{i=1}^m \sigma_i \prod_{i=1}^m d_i\right)^{1/m}$$
+      <p>等号成立的条件是 $d_i\propto \sigma_i^{-1}$。也就是说，只要 $\boldsymbol{\Phi}$ 的奇异值之积为常数，理想最小值就在 $\boldsymbol{D}\propto \boldsymbol{\Sigma}^{-1}$ 处取到。</p>
+      <p>但我们只能改动 $\boldsymbol{\Phi}$ 中的正交矩阵，这个理想最小值很难实现。作者<b>猜测</b>实际结果是最理想（$\boldsymbol{D}\propto \boldsymbol{\Sigma}^{-1}$）与最糟糕（$\boldsymbol{D}\propto \boldsymbol{\Sigma}$）之间的一个中间结果，而两者的几何平均正是 $\boldsymbol{D}\propto \boldsymbol{I}$，即奇异值均匀化。</p>
+    </div>
+    <div class="card">
+      <canvas id="c4" style="height:300px"></canvas>
+      <div class="controls">
+        <label>$\sigma_1$ <input type="range" id="c4-s1" min="0.2" max="3" step="0.01" value="2"><span class="val" data-for="c4-s1"></span></label>
+        <label>$\sigma_2$ <input type="range" id="c4-s2" min="0.2" max="3" step="0.01" value="0.5"><span class="val" data-for="c4-s2"></span></label>
+        <label>$\log(d_1/d_2)$ <input type="range" id="c4-t" min="-4" max="4" step="0.01" value="0"><span class="val" data-for="c4-t"></span></label>
+      </div>
+      <div class="legend">
+        <span><i class="sw base"></i>最理想 $d\propto 1/\sigma$</span><span><i class="sw new"></i>均匀 $d\propto 1$（Muon）</span><span><i class="sw warn"></i>最糟糕 $d\propto\sigma$</span><span><i class="sw approx"></i>下界</span>
+      </div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="readout" id="c4-out"></div>
+    <div class="plain how">
+      <ul>
+        <li>固定 $d_1 d_2 = 1$（奇异值之积为常数），横轴是两个 $d$ 的比值（取对数），纵轴是目标 $\sigma_1 d_1+\sigma_2 d_2$。</li>
+        <li>曲线最低点正好在绿线（$d\propto 1/\sigma$），碰到黄色的下界；红线（$d\propto\sigma$）是对称的另一侧。紫线（均匀）<b>正好在两者正中间</b>，因为在对数刻度上，几何平均就是中点。</li>
+        <li>读数最后一行是第 ② 节例子中<b>实际最优解</b>的 $\boldsymbol{D}$ 落在哪里：位置 $\lambda=-1$ 为最理想，$0$ 为均匀，$+1$ 为最糟糕。</li>
+      </ul>
+    </div>
+    <div class="plain">
+      这一节是在猜“力度”最后会是什么样。理论上最省的做法是“哪个方向梯度大，就在哪个方向少用力”（$d\propto 1/\sigma$），但只靠转动坐标系做不到这么精细。作者的直觉是：结果会落在“最省”和“最费”之间，而这两者的折中（几何平均）恰好是“所有方向一样用力”，也就是 Muon。
+      <b>这只是启发式论证，不是证明。</b>换几个例子（第 ② 节的 🎲）看看 $\lambda$：它常常落在 $[-1,1]$ 之间，但并不总是，也不总是靠近 0。在 2×2 这么小的矩阵上，这个“趋势”并不明显。
+    </div>
+  </div>
+</section>
+
+<!-- ================= ⑤ ================= -->
+<section id="s5">
+  <h2><span class="num">⑤</span>谱之乘积：奇异值之积真的是常数吗？</h2>
+  <div class="card">
+    <p>上一节的论证需要 $\boldsymbol{\Phi}$ 的奇异值之积为常数。对“Kronecker 积 + 方阵”情形，这确实成立：</p>
+    $$\prod_{i=1}^m d_i = |\det(\boldsymbol{\Phi})| = |\det(\boldsymbol{X}^{\top}\boldsymbol{P}\boldsymbol{X}\boldsymbol{G}\boldsymbol{Y}^{\top}\boldsymbol{Q}\boldsymbol{Y})| = |\det(\boldsymbol{P})\det(\boldsymbol{G})\det(\boldsymbol{Q})|$$
+    <p>对非方阵，上式不再成立，只能按上一篇的方法仔细讨论，或不加证明地认为它近似成立。更棘手的是对角情形：Hadamard 积不是本质的矩阵运算，无法对 $\boldsymbol{\Phi} = \boldsymbol{X}^{\top}(\boldsymbol{N}\odot\boldsymbol{X}\boldsymbol{G}\boldsymbol{Y}^{\top})\boldsymbol{Y}$ 的行列式做出有效估计。作者只能<b>猜测</b>“行列式不会有明显变化”，并坦言这个猜测很“无力”：它肯定不是恒等成立，近似程度也无法判断，更多是一种关于行列式与正交矩阵的“信仰”。</p>
+    <canvas id="c5" style="height:300px"></canvas>
+    <div class="controls"><button id="c5-batch">🧪 运行 200 个随机 2×2 例子</button></div>
+    <div class="legend">
+      <span><i class="sw pa"></i>对角（Adam）：不同 $\phi$ 下的 $|\det\boldsymbol{\Phi}|$</span>
+      <span><i class="sw pb"></i>Kronecker 积（Shampoo）：不同 $\phi$ 下的 $|\det\boldsymbol{\Phi}|$</span>
+      <span><i class="sw text"></i>虚线：$|\det\boldsymbol{P}\det\boldsymbol{G}\det\boldsymbol{Q}|$</span>
+    </div>
+    <div class="readout" id="c5-out"></div>
+    <div class="plain how">
+      <ul>
+        <li>横轴是 $\boldsymbol{X}$ 的旋转角 $\theta$，每条细线对应一个 $\boldsymbol{Y}$ 的旋转角 $\phi$。纵轴是更新量的行列式（奇异值之积）。</li>
+        <li><b>右图</b>（Kronecker）：所有曲线都压在同一条虚线上，无论怎么转都不变，与公式一致。<b>左图</b>（对角）：曲线高低起伏，转动坐标系会明显改变行列式。</li>
+        <li>点 🧪：在 200 个随机例子上统计“驻点处基底是否被洗掉”“$\lambda$ 是否落在 $[-1,1]$”“行列式变化多大”。</li>
+      </ul>
+    </div>
+    <div class="plain">
+      “行列式”可以理解为矩阵把面积放大的倍数。旋转不改变面积，所以 Shampoo 式更新“先转、再乘固定矩阵、再转回”，面积放大倍数始终不变。Adam 式的“逐格缩放”夹在两次旋转之间，就不是这样了：同一个缩放方案，格子朝向不同，放大的面积就不同，有时差别很大。
+      这说明第 ④ 节的“均匀化”论证，对 Adam 情形缺了一块关键的地基。作者对此很坦诚：<b>“洗去基底”是严格成立的，而“趋于均匀”只是信仰。</b>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 小结 ================= -->
+<section id="summary">
+  <h2><span class="num">∑</span>小结</h2>
+  <div class="card">
+    <table>
+      <tr><th style="width:22%">步骤</th><th>做了什么</th><th style="width:38%">得到什么</th></tr>
+      <tr><td>① 换坐标系</td><td>给对角预条件加 Kronecker 形式的正交变换 $\boldsymbol{X},\boldsymbol{Y}$</td><td>更新量 $\boldsymbol{\Phi}=\boldsymbol{X}^{\top}(\boldsymbol{N}\odot\boldsymbol{X}\boldsymbol{G}\boldsymbol{Y}^{\top})\boldsymbol{Y}$；目标 $\Vert\boldsymbol{N}^{\odot/2}\odot\boldsymbol{X}\boldsymbol{G}\boldsymbol{Y}^{\top}\Vert_F^2$</td></tr>
+      <tr><td>统一形式</td><td>与上一篇的 Kronecker 目标对比</td><td>两者都是 $f(\boldsymbol{X}\boldsymbol{G}\boldsymbol{Y}^{\top})$</td></tr>
+      <tr><td>② 驻点条件</td><td>拉格朗日乘子法</td><td>$\boldsymbol{X}^{\top}\boldsymbol{K}\boldsymbol{Y}=\boldsymbol{U}\boldsymbol{D}\boldsymbol{V}^{\top}$，与 $f$ 无关</td></tr>
+      <tr><td>③ 洗去基底</td><td>两种情形都有 $\boldsymbol{\Phi}=\boldsymbol{X}^{\top}\boldsymbol{K}\boldsymbol{Y}/2$</td><td>更新量的奇异向量 = 梯度的奇异向量（第一重含义，严格）</td></tr>
+      <tr><td>④ 均匀吗</td><td>均值不等式</td><td>理想 $\boldsymbol{D}\propto\boldsymbol{\Sigma}^{-1}$，猜测结果介于两端之间，几何平均即 $\boldsymbol{D}\propto\boldsymbol{I}$（第二重含义，启发式）</td></tr>
+      <tr><td>⑤ 行列式</td><td>检查奇异值之积是否守恒</td><td>Kronecker + 方阵：守恒；对角：无法估计，只是“信仰”</td></tr>
+    </table>
+    <div class="key">正交最慢下降对“基”是无情的：无论预条件原本用什么坐标系（Kronecker 积或逐元素对角），最优更新量的方向都只能来自梯度自身的 SVD。它唯一可能保留的自由度是奇异值，而这些奇异值是否会被“抹平”成 Muon，对 Adam 家族来说仍是开放问题。</div>
+    <div class="plain">
+      <b>用三句话讲给朋友听：</b>
+      <ol>
+        <li>Adam 给参数表格的每一格配一个步长，但“格子怎么划”是人为定的；作者允许把格子任意转动，再按“正交最慢下降”原则挑最好的朝向。</li>
+        <li>结果是：最好的方案里，原来的格子朝向完全不起作用，更新的“方向”只能是梯度自己的主方向，能调的只剩各方向的力度，这和 Muon 的做法一模一样。</li>
+        <li>至于力度最后会不会变得一样大（彻底变成 Muon），作者只给出了一个自认“无力”的猜测，还需要更多研究。</li>
+      </ol>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 术语表 ================= -->
+<section id="gloss">
+  <h2><span class="num">📖</span>术语表</h2>
+  <div class="card">
+    <dl class="gloss">
+      <dt>优化器</dt><dd>决定“根据梯度怎样更新参数”的算法，如 SGD、Adam、Shampoo、Muon。</dd>
+      <dt>梯度矩阵 $\boldsymbol{G}$</dt><dd>损失对一层权重矩阵的导数，形状与权重相同，告诉我们每个参数该往哪改。</dd>
+      <dt>动量</dt><dd>梯度的滑动平均。很多优化器实际处理的是动量而不是当步梯度。</dd>
+      <dt>预条件</dt><dd>在迈步之前先对梯度做一次变换（缩放、混合），让各方向的步子更合理。</dd>
+      <dt>对角近似 / RMSProp / Adam</dt><dd>预条件只对每个参数单独缩放，即 $\boldsymbol{N}\odot\boldsymbol{G}$。</dd>
+      <dt>Kronecker 积 / Shampoo</dt><dd>预条件写成左右两个小矩阵的组合，更新形如 $\boldsymbol{P}\boldsymbol{G}\boldsymbol{Q}$。</dd>
+      <dt>Hadamard 积 $\odot$</dt><dd>两个同形状矩阵逐元素相乘。</dd>
+      <dt>正交矩阵</dt><dd>满足 $\boldsymbol{X}^{\top}\boldsymbol{X}=\boldsymbol{I}$ 的矩阵，即旋转或镜像，不改变长度和面积。</dd>
+      <dt>SVD / 奇异值 / 奇异向量</dt><dd>$\boldsymbol{G}=\boldsymbol{U}\boldsymbol{\Sigma}\boldsymbol{V}^{\top}$：任何矩阵都能拆成“转、沿主轴拉伸、再转”。拉伸倍数是奇异值，主轴方向是奇异向量。</dd>
+      <dt>Muon</dt><dd>把（动量的）SVD 中的奇异值全部换成 1 的优化器：更新量为 $\boldsymbol{U}\boldsymbol{V}^{\top}$。</dd>
+      <dt>正交最慢下降</dt><dd>本系列上一篇提出的原则：在允许的正交变换中，选让更新量与梯度内积最小的那一个。</dd>
+      <dt>迹 $\mathop{\text{tr}}$</dt><dd>方阵对角元之和；$\mathop{\text{tr}}(\boldsymbol{G}^{\top}\boldsymbol{\Phi})$ 就是两个矩阵逐元素相乘再求和（内积）。</dd>
+      <dt>Frobenius 范数 $\Vert\cdot\Vert_F$</dt><dd>矩阵所有元素平方和再开方。</dd>
+      <dt>拉格朗日乘子</dt><dd>求带约束最优值时引入的辅助变量，这里的约束是“$\boldsymbol{X},\boldsymbol{Y}$ 必须正交”。</dd>
+      <dt>驻点</dt><dd>梯度为零的点，包括最低点（也可能是最高点或鞍点）。</dd>
+      <dt>均值不等式</dt><dd>算术平均 ≥ 几何平均，所有数相等时取等号。</dd>
+      <dt>行列式 $\det$</dt><dd>方阵把面积（体积）放大的倍数，等于所有奇异值之积（取绝对值时）。</dd>
+    </dl>
+  </div>
+</section>
+</main>
+<footer>可视化解读 · 原文：<a href="https://kexue.fm/archives/11964" target="_blank">https://kexue.fm/archives/11964</a> · 页面中的数值均为实时计算 · <a href="../index.html">← 返回目录</a></footer>
+
+<script>
+/* ==== viz-core.js（内联快照，勿手改） ==== */
+/* viz-core.js — uKnowViz 共享可视化运行时 v1
+ * 无依赖（KaTeX 可选）。全部挂在全局 VIZ 上。API 说明见 references/components.md
+ *
+ *  数学      VIZ.clamp lerp linspace sum softmax logsumexp randn rng fmt fmtE integrate ease
+ *  颜色      VIZ.C（从 CSS 变量读取） VIZ.alpha(hex,a) VIZ.cmap.seq(u) VIZ.cmap.div(x,m)
+ *  画布      VIZ.plot(canvas, opts) → Plot（坐标映射 + 轴 + 线/面/柱/点/箭头/文字）
+ *            VIZ.heatmap(canvas, M, opts)
+ *  动画      VIZ.animate(ms, onFrame, onDone) VIZ.player({...})
+ *  控件      VIZ.slider(id, cb, digits) VIZ.num(id) VIZ.readout(id, html) VIZ.$(id)
+ *  组件      VIZ.stepper(el, steps) VIZ.schematic(canvas, opts)
+ *  生命周期  VIZ.onReady(fn) VIZ.onRender(fn) VIZ.redraw() VIZ.start()
+ */
+(function (global) {
+  'use strict';
+  const VIZ = {};
+  const $ = id => (typeof id === 'string' ? document.getElementById(id) : id);
+  VIZ.$ = $;
+
+  /* ============ 数学 ============ */
+  VIZ.clamp = (x, a, b) => Math.max(a, Math.min(b, x));
+  VIZ.lerp = (a, b, u) => a + (b - a) * u;
+  VIZ.linspace = (a, b, n) => Array.from({ length: n }, (_, i) => a + (b - a) * i / (n - 1));
+  VIZ.sum = arr => arr.reduce((s, x) => s + x, 0);
+  VIZ.logsumexp = arr => {
+    const f = arr.filter(Number.isFinite); if (!f.length) return -Infinity;
+    const m = Math.max(...f); return m + Math.log(VIZ.sum(f.map(x => Math.exp(x - m))));
+  };
+  /** softmax，-Infinity 视为被 mask（权重 0） */
+  VIZ.softmax = arr => {
+    const lse = VIZ.logsumexp(arr);
+    return arr.map(x => (Number.isFinite(x) ? Math.exp(x - lse) : 0));
+  };
+  /** 可复现随机数：const r = VIZ.rng(42); r() ∈ [0,1) */
+  VIZ.rng = seed => {
+    let a = (seed >>> 0) || 1;
+    return () => { a |= 0; a = (a + 0x6D2B79F5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+  };
+  /** 标准正态；可传入 VIZ.rng 生成器以复现 */
+  VIZ.randn = (r = Math.random) => {
+    let u = 0, v = 0; while (!u) u = r(); while (!v) v = r();
+    return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+  };
+  /** 定宽数字：正数前补空格，使读数列对齐 */
+  VIZ.fmt = (x, n = 4) => (!Number.isFinite(x) ? String(x) : (x >= 0 ? ' ' : '') + x.toFixed(n));
+  VIZ.fmtE = (x, n = 1) => x.toExponential(n);
+  /** 数值积分（复合 Simpson，n 取偶数），用于在页面上核对闭式解 */
+  VIZ.integrate = (f, a, b, n = 2000) => {
+    if (n % 2) n++; const h = (b - a) / n; let s = f(a) + f(b);
+    for (let i = 1; i < n; i++) s += f(a + i * h) * (i % 2 ? 4 : 2);
+    return s * h / 3;
+  };
+  VIZ.ease = {
+    inOut: u => (u < .5 ? 2 * u * u : 1 - Math.pow(-2 * u + 2, 2) / 2),
+    out: u => 1 - Math.pow(1 - u, 3),
+    linear: u => u,
+  };
+
+  /* ============ 颜色 ============ */
+  VIZ.C = {};
+  function loadPalette() {
+    const cs = getComputedStyle(document.documentElement);
+    ['bg', 'panel', 'panel2', 'line', 'text', 'muted', 'dim', 'new', 'base', 'pa', 'pb', 'approx', 'warn']
+      .forEach(k => { VIZ.C[k] = cs.getPropertyValue('--' + k).trim(); });
+  }
+  /** '#rgb' / '#rrggbb' → rgba 字符串 */
+  VIZ.alpha = (hex, a) => {
+    let h = hex.replace('#', ''); if (h.length === 3) h = h.split('').map(c => c + c).join('');
+    const n = parseInt(h, 16); return `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},${a})`;
+  };
+  const SEQ = [[13, 8, 135], [84, 2, 163], [139, 10, 165], [185, 50, 137], [219, 92, 104], [244, 136, 73], [254, 188, 43], [240, 249, 33]];
+  VIZ.cmap = {
+    /** 顺序色带（plasma 近似），u∈[0,1] */
+    seq(u) {
+      u = VIZ.clamp(u, 0, 1) * (SEQ.length - 1); const i = Math.floor(u), f = u - i;
+      const c0 = SEQ[i], c1 = SEQ[Math.min(i + 1, SEQ.length - 1)];
+      return `rgb(${c0.map((c, k) => Math.round(c + (c1[k] - c) * f)).join(',')})`;
+    },
+    /** 发散色带：负→蓝，0→深底色，正→红；m 为饱和值 */
+    div(x, m = 1) {
+      const u = VIZ.clamp(x / m, -1, 1);
+      return u >= 0 ? `rgb(${Math.round(30 + 225 * u)},${Math.round(34 + 30 * u)},${Math.round(64 + 10 * u)})`
+        : `rgb(${Math.round(30 - 10 * u)},${Math.round(34 - 100 * u)},${Math.round(64 - 180 * u)})`;
+    },
+  };
+
+  /* ============ 画布 ============ */
+  /** HiDPI 适配；每次重绘前调用（同时清空画布） */
+  VIZ.setup = cv => {
+    cv = $(cv);
+    const dpr = global.devicePixelRatio || 1, w = cv.clientWidth, h = cv.clientHeight;
+    cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr);
+    const ctx = cv.getContext('2d'); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.font = '12px Consolas, Menlo, monospace'; ctx.lineJoin = 'round';
+    return { ctx, w, h, cv };
+  };
+
+  class Plot {
+    /**
+     * opts.x=[x0,x1], opts.y=[y0,y1]   数据坐标范围
+     * opts.m={l,r,t,b}                 边距(px)
+     * opts.equal=true                  等比例（旋转、几何图）
+     * opts.box=[px0,py0,px1,py1]       只占画布的一部分（上下分栏时用）
+     * opts.keep=true                   不清空画布，在同一画布上叠加第二个坐标系（双 y 轴 / 分栏）
+     */
+    constructor(cv, opts = {}) {
+      const el = $(cv);
+      Object.assign(this, opts.keep ? { ctx: el.getContext('2d'), w: el.clientWidth, h: el.clientHeight, cv: el } : VIZ.setup(el));
+      const m = Object.assign({ l: 46, r: 16, t: 16, b: 30 }, opts.m || {});
+      const box = opts.box || [0, 0, this.w, this.h];
+      this.L = box[0] + m.l; this.R = box[2] - m.r; this.T = box[1] + m.t; this.B = box[3] - m.b;
+      this.x = (opts.x || [0, 1]).slice(); this.y = (opts.y || [0, 1]).slice();
+      if (opts.equal) {
+        const sx = (this.R - this.L) / (this.x[1] - this.x[0]), sy = (this.B - this.T) / (this.y[1] - this.y[0]);
+        const s = Math.min(sx, sy), cx = (this.x[0] + this.x[1]) / 2, cy = (this.y[0] + this.y[1]) / 2;
+        const hw = (this.R - this.L) / s / 2, hh = (this.B - this.T) / s / 2;
+        this.x = [cx - hw, cx + hw]; this.y = [cy - hh, cy + hh];
+      }
+    }
+    X(v) { return this.L + (this.R - this.L) * (v - this.x[0]) / (this.x[1] - this.x[0]); }
+    Y(v) { return this.B - (this.B - this.T) * (v - this.y[0]) / (this.y[1] - this.y[0]); }
+    /** 像素长度 ↔ 数据长度 */
+    sx(d) { return d * (this.R - this.L) / (this.x[1] - this.x[0]); }
+    sy(d) { return d * (this.B - this.T) / (this.y[1] - this.y[0]); }
+    _style(o, defColor) {
+      const c = this.ctx; c.strokeStyle = o.color || defColor || VIZ.C.text; c.lineWidth = o.width || 2;
+      c.setLineDash(o.dash || []); c.globalAlpha = o.alpha == null ? 1 : o.alpha;
+    }
+    _reset() { this.ctx.setLineDash([]); this.ctx.globalAlpha = 1; }
+    /** 坐标轴。o.xTicks/yTicks: 数组或 'auto'；o.xFmt/yFmt: 刻度文字格式（o.tickFmt 同时作用于两轴）；
+     *  o.xLabel/yLabel；o.grid；o.zero（画 y=0 / x=0 线） */
+    axes(o = {}) {
+      const c = this.ctx, C = VIZ.C;
+      const ticks = (t, r) => (t === 'auto' ? niceTicks(r[0], r[1], 5) : t || []);
+      const xt = ticks(o.xTicks, this.x), yt = ticks(o.yTicks, this.y);
+      c.strokeStyle = C.line; c.lineWidth = 1;
+      if (o.grid) {
+        c.globalAlpha = .45;
+        xt.forEach(v => { c.beginPath(); c.moveTo(this.X(v), this.T); c.lineTo(this.X(v), this.B); c.stroke(); });
+        yt.forEach(v => { c.beginPath(); c.moveTo(this.L, this.Y(v)); c.lineTo(this.R, this.Y(v)); c.stroke(); });
+        c.globalAlpha = 1;
+      }
+      c.beginPath(); c.moveTo(this.L, this.T); c.lineTo(this.L, this.B); c.lineTo(this.R, this.B); c.stroke();
+      if (o.zero) {
+        c.setLineDash([3, 4]);
+        if (this.y[0] < 0 && this.y[1] > 0) { c.beginPath(); c.moveTo(this.L, this.Y(0)); c.lineTo(this.R, this.Y(0)); c.stroke(); }
+        if (this.x[0] < 0 && this.x[1] > 0) { c.beginPath(); c.moveTo(this.X(0), this.T); c.lineTo(this.X(0), this.B); c.stroke(); }
+        c.setLineDash([]);
+      }
+      c.fillStyle = C.muted; c.textAlign = 'center'; c.textBaseline = 'alphabetic';
+      const def = v => +v.toFixed(3), xf = o.xFmt || o.tickFmt || def, yf = o.yFmt || o.tickFmt || def;
+      xt.forEach(v => c.fillText(xf(v), this.X(v), this.B + 16));
+      c.textAlign = 'right'; yt.forEach(v => c.fillText(yf(v), this.L - 6, this.Y(v) + 4));
+      if (o.xLabel) { c.textAlign = 'right'; c.fillText(o.xLabel, this.R, this.B - 6); }
+      if (o.yLabel) { c.textAlign = 'left'; c.fillText(o.yLabel, this.L + 6, this.T + 10); }
+      return this;
+    }
+    /** 函数曲线 y=f(x)。o.from/o.to/o.n/o.color/o.width/o.dash/o.clip(默认 true：超出 y 范围截断) */
+    fn(f, o = {}) {
+      const a = o.from ?? this.x[0], b = o.to ?? this.x[1], n = o.n || 300;
+      const pts = []; for (let i = 0; i <= n; i++) { const x = a + (b - a) * i / n; pts.push([x, f(x)]); }
+      return this.path(pts, o);
+    }
+    /** 折线（数据坐标点数组 [[x,y],...]） */
+    path(pts, o = {}) {
+      const c = this.ctx, clip = o.clip !== false; this._style(o, VIZ.C.new);
+      if (clip) { c.save(); c.beginPath(); c.rect(this.L, this.T - 2, this.R - this.L, this.B - this.T + 4); c.clip(); }
+      c.beginPath(); let started = false;
+      for (const [x, y] of pts) {
+        if (!Number.isFinite(y)) { started = false; continue; }
+        const px = this.X(x), py = this.Y(y); started ? c.lineTo(px, py) : c.moveTo(px, py); started = true;
+      }
+      c.stroke(); if (clip) c.restore(); this._reset(); return this;
+    }
+    /** 两曲线间填色：f 上沿，g 下沿（默认 0）。o.fill/o.from/o.to */
+    area(f, g = 0, o = {}) {
+      const c = this.ctx, a = o.from ?? this.x[0], b = o.to ?? this.x[1], n = o.n || 200;
+      const gf = typeof g === 'function' ? g : () => g;
+      c.beginPath();
+      for (let i = 0; i <= n; i++) { const x = a + (b - a) * i / n; const p = [this.X(x), this.Y(f(x))]; i ? c.lineTo(...p) : c.moveTo(...p); }
+      for (let i = n; i >= 0; i--) { const x = a + (b - a) * i / n; c.lineTo(this.X(x), this.Y(gf(x))); }
+      c.closePath(); c.fillStyle = o.fill || VIZ.alpha(VIZ.C.new, .3); c.fill(); return this;
+    }
+    /** 竖直柱：中心 x，高度 h（数据单位），o.w 像素宽，o.base 底部，o.fill/o.stroke/o.dash/o.label */
+    bar(x, h, o = {}) {
+      const c = this.ctx, w = o.w || 14, base = o.base || 0;
+      const x0 = this.X(x) - w / 2 + (o.dx || 0), y0 = this.Y(base + Math.max(h, 0)), y1 = this.Y(base + Math.min(h, 0));
+      if (o.fill !== null) { c.fillStyle = o.fill || VIZ.alpha(VIZ.C.base, .85); c.fillRect(x0, y0, w, y1 - y0); }
+      if (o.stroke) { c.strokeStyle = o.stroke; c.lineWidth = o.lineWidth || 1.5; c.setLineDash(o.dash || []); c.strokeRect(x0, y0, w, y1 - y0); c.setLineDash([]); }
+      if (o.label != null) { c.fillStyle = o.labelColor || VIZ.C.muted; c.textAlign = 'center'; c.fillText(o.label, x0 + w / 2, h >= 0 ? y0 - 4 : y1 + 12); }
+      return this;
+    }
+    dot(x, y, o = {}) {
+      const c = this.ctx; c.fillStyle = o.color || VIZ.C.text; c.globalAlpha = o.alpha ?? 1;
+      c.beginPath(); c.arc(this.X(x), this.Y(y), o.r || 4, 0, Math.PI * 2); c.fill(); c.globalAlpha = 1; return this;
+    }
+    /** 箭头（数据坐标），向量/梯度/旋转演示用 */
+    arrow(x0, y0, x1, y1, o = {}) {
+      const c = this.ctx, p0 = [this.X(x0), this.Y(y0)], p1 = [this.X(x1), this.Y(y1)];
+      const ang = Math.atan2(p1[1] - p0[1], p1[0] - p0[0]), hs = o.head || 9;
+      this._style(o, VIZ.C.text); c.beginPath(); c.moveTo(...p0); c.lineTo(...p1); c.stroke(); this._reset();
+      c.fillStyle = o.color || VIZ.C.text; c.beginPath(); c.moveTo(...p1);
+      c.lineTo(p1[0] - hs * Math.cos(ang - .4), p1[1] - hs * Math.sin(ang - .4));
+      c.lineTo(p1[0] - hs * Math.cos(ang + .4), p1[1] - hs * Math.sin(ang + .4)); c.closePath(); c.fill();
+      if (o.label) { c.textAlign = 'left'; c.fillText(o.label, p1[0] + 6, p1[1] - 6); }
+      return this;
+    }
+    vline(x, o = {}) { return this.path([[x, this.y[0]], [x, this.y[1]]], Object.assign({ color: VIZ.C.dim, width: 1, dash: [3, 4] }, o)); }
+    hline(y, o = {}) { return this.path([[this.x[0], y], [this.x[1], y]], Object.assign({ color: VIZ.C.dim, width: 1, dash: [3, 4] }, o)); }
+    /** 文字（数据坐标）。o.px=true 时 x,y 为像素坐标；o.align/o.color/o.size/o.bold */
+    text(s, x, y, o = {}) {
+      const c = this.ctx; c.fillStyle = o.color || VIZ.C.muted; c.textAlign = o.align || 'center';
+      if (o.size || o.bold) c.font = `${o.bold ? 'bold ' : ''}${o.size || 12}px Consolas, Menlo, "Microsoft YaHei", monospace`;
+      c.fillText(s, o.px ? x : this.X(x), o.px ? y : this.Y(y));
+      c.font = '12px Consolas, Menlo, monospace'; return this;
+    }
+  }
+  function niceTicks(a, b, n) {
+    const span = b - a, step0 = span / n, mag = Math.pow(10, Math.floor(Math.log10(step0)));
+    const step = [1, 2, 5, 10].map(k => k * mag).find(s => span / s <= n) || 10 * mag;
+    const out = []; for (let v = Math.ceil(a / step) * step; v <= b + 1e-9; v += step) out.push(+v.toFixed(10)); return out;
+  }
+  VIZ.niceTicks = niceTicks;
+  VIZ.Plot = Plot;
+  VIZ.plot = (cv, opts) => new Plot(cv, opts);
+
+  /**
+   * 热力图。M 为二维数组（行×列）。
+   * opts.color(v,r,c) → css 颜色（默认 seq(√v)）
+   * opts.mask(r,c) → true 表示不可见（如因果遮罩）
+   * opts.highlightRow / highlightCol：白框高亮
+   * opts.onClick({r,c})：点击回调（自动绑定一次）
+   * opts.rowLabel/colLabel：轴说明；opts.values=true 时在格子里写数值
+   */
+  VIZ.heatmap = (cv, M, opts = {}) => {
+    const { ctx, w, h } = VIZ.setup(cv); cv = $(cv);
+    const R = M.length, Cn = Math.max(...M.map(r => r.length)), pad = opts.pad ?? 22;
+    const cs = Math.min((w - pad - 6) / Cn, (h - pad - 8) / R), ox = pad + ((w - pad - 6) - cs * Cn) / 2, oy = 4;
+    const color = opts.color || (v => VIZ.cmap.seq(Math.sqrt(Math.max(0, v))));
+    for (let r = 0; r < R; r++) for (let c = 0; c < Cn; c++) {
+      const x = ox + c * cs, y = oy + r * cs, v = M[r][c];
+      ctx.fillStyle = (opts.mask && opts.mask(r, c)) || v == null ? '#0b0e1c' : color(v, r, c);
+      ctx.fillRect(x, y, cs - 1, cs - 1);
+      if (opts.values && v != null && !(opts.mask && opts.mask(r, c)) && cs > 22) {
+        ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.font = '10px Consolas';
+        ctx.fillText(typeof opts.values === 'function' ? opts.values(v) : v.toFixed(2), x + cs / 2, y + cs / 2 + 3);
+      }
+    }
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
+    if (opts.highlightRow != null) ctx.strokeRect(ox - 1, oy + opts.highlightRow * cs - 1, Cn * cs + 1, cs + 1);
+    if (opts.highlightCol != null) ctx.strokeRect(ox + opts.highlightCol * cs - 1, oy - 1, cs + 1, R * cs + 1);
+    ctx.fillStyle = VIZ.C.muted; ctx.textAlign = 'center'; ctx.font = '10px Consolas';
+    if (opts.colLabel) ctx.fillText(opts.colLabel, ox + Cn * cs / 2, oy + R * cs + 14);
+    if (opts.rowLabel) { ctx.save(); ctx.translate(10, oy + R * cs / 2); ctx.rotate(-Math.PI / 2); ctx.fillText(opts.rowLabel, 0, 0); ctx.restore(); }
+    cv._vizHeat = { ox, oy, cs, R, Cn, onClick: opts.onClick };
+    if (opts.onClick) { cv.classList.add('clickable'); }
+    if (!cv._vizHeatBound) {
+      cv._vizHeatBound = true;
+      cv.addEventListener('click', e => {
+        const g = cv._vizHeat; if (!g || !g.onClick) return; const b = cv.getBoundingClientRect();
+        const c = Math.floor((e.clientX - b.left - g.ox) / g.cs), r = Math.floor((e.clientY - b.top - g.oy) / g.cs);
+        if (r >= 0 && r < g.R && c >= 0 && c < g.Cn) g.onClick({ r, c });
+      });
+    }
+    return cv._vizHeat;
+  };
+
+  /* ============ 动画 ============ */
+  /** 跑一段 ms 毫秒的动画，onFrame(u∈[0,1])；返回取消函数 */
+  VIZ.animate = (ms, onFrame, onDone) => {
+    let stop = false; const t0 = performance.now();
+    const step = now => { if (stop) return; const u = Math.min(1, (now - t0) / ms); onFrame(u); u < 1 ? requestAnimationFrame(step) : onDone && onDone(); };
+    requestAnimationFrame(step); return () => { stop = true; };
+  };
+  /**
+   * 播放器：把「播放按钮 + 进度滑块 + 数值标签」绑定成一个可拖动、可播放的时间轴。
+   * VIZ.player({ button:'id', range:'id', label:'id'(可选), ms:2500, from:0(可选，从头播放的起点), onUpdate:u=>draw(u) })
+   * 返回 { set(u), play(), get() }。滑块需 min=0 max=1 step=0.001。
+   */
+  VIZ.player = o => {
+    let u = 0, cancel = null; const btn = $(o.button), rg = $(o.range), lb = o.label && $(o.label);
+    const txt = btn ? btn.textContent : '';
+    const set = v => { u = v; if (rg) rg.value = v; if (lb) lb.textContent = Math.round(v * 100) + '%'; o.onUpdate(v); };
+    const stopIt = () => { if (cancel) cancel(); cancel = null; if (btn) btn.textContent = txt; };
+    const play = () => {
+      if (cancel) { stopIt(); return; }
+      const start = u >= 1 ? (o.from || 0) : u; if (btn) btn.textContent = '⏸ 暂停';
+      cancel = VIZ.animate(o.ms * (1 - start), k => set(start + (1 - start) * k), stopIt);
+    };
+    if (btn) btn.addEventListener('click', play);
+    if (rg) rg.addEventListener('input', e => { stopIt(); set(+e.target.value); });
+    return { set, play, get: () => u };
+  };
+
+  /* ============ 控件 ============ */
+  VIZ.num = id => +$(id).value;
+  /**
+   * 绑定滑块：自动更新 <span class="val" data-for="id"> 的显示，并在 input 时调用 cb(value)。
+   * 不会立刻调用 cb（首帧由 VIZ.onRender 统一绘制）。
+   */
+  VIZ.slider = (id, cb, digits = 2) => {
+    const el = $(id), out = document.querySelector(`.val[data-for="${id}"]`);
+    const show = () => { if (out) out.textContent = (+el.value).toFixed(digits); };
+    el.addEventListener('input', () => { show(); cb && cb(+el.value); }); show();
+    return el;
+  };
+  VIZ.readout = (id, html) => { $(id).innerHTML = html; };
+
+  /* ============ 组件 ============ */
+  /**
+   * 公式分步展开器：逐行显示推导，每步一句“为什么”。
+   * steps: [{tex:'...LaTeX...', why:'这一步做了什么'}]
+   * 容器内自动生成 ◀ ▶ 按钮；需要 KaTeX。
+   */
+  VIZ.stepper = (el, steps, opts = {}) => {
+    el = $(el); el.classList.add('stepper'); el.innerHTML = '';
+    const rows = steps.map(s => {
+      const d = document.createElement('div'); d.className = 'step hidden';
+      const m = document.createElement('div');
+      try { global.katex.render(s.tex, m, { displayMode: true, throwOnError: false }); } catch (e) { m.textContent = s.tex; }
+      d.appendChild(m);
+      if (s.why) { const w = document.createElement('div'); w.className = 'why'; w.innerHTML = '↳ ' + s.why; d.appendChild(w); }
+      el.appendChild(d); return d;
+    });
+    const bar = document.createElement('div'); bar.className = 'controls';
+    bar.innerHTML = `<button data-a="prev">◀ 上一步</button><button class="primary" data-a="next">下一步 ▶</button><button data-a="all">全部展开</button><span class="note"></span>`;
+    el.appendChild(bar);
+    let k = opts.start ?? 0;
+    const show = () => {
+      rows.forEach((r, i) => { r.classList.toggle('hidden', i > k); r.classList.toggle('cur', i === k); });
+      bar.querySelector('.note').textContent = `第 ${k + 1} / ${rows.length} 步`;
+      opts.onStep && opts.onStep(k);
+    };
+    bar.addEventListener('click', e => {
+      const a = e.target.dataset.a; if (!a) return;
+      if (a === 'prev') k = Math.max(0, k - 1); if (a === 'next') k = Math.min(rows.length - 1, k + 1); if (a === 'all') k = rows.length - 1;
+      show();
+    });
+    show(); return { go: i => { k = i; show(); } };
+  };
+
+  /**
+   * 示意曲线（原文没有给数据时使用），永远带“示意图，非原文数据”水印。
+   * opts: { curves:[{name,color,f,dash}], progress:0..1, x:[0,1], y:[lo,hi], xLabel, yLabel, marks:[{x,label}] }
+   */
+  VIZ.schematic = (cv, o) => {
+    const legendW = 150, p = VIZ.plot(cv, { x: o.x || [0, 1], y: o.y, m: { l: 40, r: legendW, t: 16, b: 30 } });
+    p.axes({ xLabel: o.xLabel, yLabel: o.yLabel });
+    const prog = o.progress ?? 1, [x0, x1] = p.x;
+    (o.marks || []).forEach(m => { if ((m.x - x0) / (x1 - x0) <= prog) { p.vline(m.x); p.text(m.label, m.x, p.y[1], { color: VIZ.C.dim }); } });
+    o.curves.forEach((cv_, k) => {
+      p.fn(cv_.f, { color: cv_.color, dash: cv_.dash, width: 2.2, to: x0 + (x1 - x0) * prog });
+      const c = p.ctx; c.fillStyle = cv_.color; c.fillRect(p.R + 16, p.T + 8 + k * 22, 14, 3);
+      c.textAlign = 'left'; c.fillText(cv_.name, p.R + 36, p.T + 13 + k * 22);
+    });
+    p.text('示意图，非原文数据', p.R - 4, p.B - 8, { px: true, align: 'right', color: VIZ.C.warn });
+    return p;
+  };
+
+  /* ============ 生命周期 ============ */
+  const renders = [], readies = [];
+  /** 注册绘制函数：启动时、窗口缩放时自动重绘 */
+  VIZ.onRender = fn => { renders.push(fn); return fn; };
+  /** 注册一次性初始化（KaTeX 就绪后、首次绘制前执行；VIZ.stepper 应放在这里创建） */
+  VIZ.onReady = fn => { readies.push(fn); return fn; };
+  VIZ.redraw = () => renders.forEach(fn => { try { fn(); } catch (e) { reportError(e); } });
+
+  const KATEX_CDN = 'https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/';
+  function loadScript(src) {
+    return new Promise((ok, fail) => { const s = document.createElement('script'); s.src = src; s.onload = ok; s.onerror = fail; document.head.appendChild(s); });
+  }
+  /** 本地 _lib/katex 加载失败时自动回退 CDN */
+  async function ensureKatex() {
+    if (global.katex && global.renderMathInElement) return true;
+    try {
+      const l = document.createElement('link'); l.rel = 'stylesheet'; l.href = KATEX_CDN + 'katex.min.css'; document.head.appendChild(l);
+      if (!global.katex) await loadScript(KATEX_CDN + 'katex.min.js');
+      if (!global.renderMathInElement) await loadScript(KATEX_CDN + 'contrib/auto-render.min.js');
+      return true;
+    } catch (e) { reportError(new Error('KaTeX 加载失败：公式将以源码显示')); return false; }
+  }
+  function reportError(e) {
+    const msg = (e && (e.message || e.reason || e)) + '';
+    const root = document.documentElement; root.dataset.vizErrors = ((root.dataset.vizErrors || '') + msg + ' | ').slice(0, 2000);
+    let bar = document.getElementById('viz-errors');
+    if (!bar && document.body) { bar = document.createElement('div'); bar.id = 'viz-errors'; document.body.appendChild(bar); }
+    if (bar) { bar.style.display = 'block'; bar.textContent += '⚠ ' + msg + '\n'; }
+    console.error(e);
+  }
+  global.addEventListener('error', e => reportError(e.error || e.message));
+  global.addEventListener('unhandledrejection', e => reportError(e.reason));
+
+  /** 页面脚本最后调用：渲染公式 → 读取配色 → 首次绘制 → 监听缩放 */
+  VIZ.start = () => {
+    const go = async () => {
+      loadPalette();
+      if (await ensureKatex()) {
+        global.renderMathInElement(document.body, {
+          delimiters: [{ left: '$$', right: '$$', display: true }, { left: '$', right: '$', display: false }],
+          throwOnError: false, ignoredClasses: ['readout', 'no-math'],
+        });
+      }
+      readies.forEach(fn => { try { fn(); } catch (e) { reportError(e); } });
+      VIZ.redraw();
+      document.documentElement.dataset.vizReady = '1';
+    };
+    document.readyState === 'loading' ? document.addEventListener('DOMContentLoaded', go) : go();
+    let t; global.addEventListener('resize', () => { clearTimeout(t); t = setTimeout(VIZ.redraw, 120); });
+  };
+
+  global.VIZ = VIZ;
+})(window);
+
+</script>
+<script>
+/* ==== 页面脚本 ==== */
+'use strict';
+const { $, C, fmt } = VIZ;
+
+/* ---------- 2×2 矩阵工具 ---------- */
+const Rot = t => [[Math.cos(t), -Math.sin(t)], [Math.sin(t), Math.cos(t)]];
+const T = A => [[A[0][0], A[1][0]], [A[0][1], A[1][1]]];
+const mul = (A, B) => [[A[0][0] * B[0][0] + A[0][1] * B[1][0], A[0][0] * B[0][1] + A[0][1] * B[1][1]],
+                       [A[1][0] * B[0][0] + A[1][1] * B[1][0], A[1][0] * B[0][1] + A[1][1] * B[1][1]]];
+const mul3 = (A, B, Cm) => mul(mul(A, B), Cm);
+const had = (A, B) => A.map((r, i) => r.map((x, j) => x * B[i][j]));
+const sub = (A, B) => A.map((r, i) => r.map((x, j) => x - B[i][j]));
+const fro = A => Math.sqrt(A.flat().reduce((s, x) => s + x * x, 0));
+const inner = (A, B) => A.flat().reduce((s, x, k) => s + x * B.flat()[k], 0);
+const det = A => A[0][0] * A[1][1] - A[0][1] * A[1][0];
+const diag = (a, b) => [[a, 0], [0, b]];
+const sqrtEl = A => A.map(r => r.map(Math.sqrt));
+const apply = (A, v) => [A[0][0] * v[0] + A[0][1] * v[1], A[1][0] * v[0] + A[1][1] * v[1]];
+const fmtM = A => `[[${A[0].map(x => fmt(x, 3)).join(',')}],[${A[1].map(x => fmt(x, 3)).join(',')}]]`;
+/** 2×2 SVD：A = U diag(s) Vᵀ，s₁ ≥ s₂ ≥ 0 */
+function svd(A) {
+  const M = mul(T(A), A), psi = 0.5 * Math.atan2(2 * M[0][1], M[0][0] - M[1][1]);
+  let v1 = [Math.cos(psi), Math.sin(psi)], v2 = [-Math.sin(psi), Math.cos(psi)];
+  let a1 = apply(A, v1), a2 = apply(A, v2), s1 = Math.hypot(...a1), s2 = Math.hypot(...a2);
+  if (s2 > s1) [v1, v2, a1, a2, s1, s2] = [v2, v1, a2, a1, s2, s1];
+  const u1 = a1.map(x => x / s1), u2 = s2 > 1e-12 ? a2.map(x => x / s2) : [-u1[1], u1[0]];
+  return { U: [[u1[0], u2[0]], [u1[1], u2[1]]], V: [[v1[0], v2[0]], [v1[1], v2[1]]], s: [s1, s2] };
+}
+
+/* ---------- 例子：G、N（对角）、P、Q（Kronecker） ---------- */
+function makeExample(seed) {
+  const r = VIZ.rng(seed), ang = () => r() * Math.PI;
+  const spd = () => { const c = ang(); return mul3(Rot(c), diag(0.3 + 2 * r(), 0.3 + 2 * r()), T(Rot(c))); };
+  return {
+    seed,
+    G: mul3(Rot(ang()), diag(2, 0.5 + r()), T(Rot(ang()))),
+    N: [[0.2 + 1.8 * r(), 0.2 + 1.8 * r()], [0.2 + 1.8 * r(), 0.2 + 1.8 * r()]],
+    P: spd(), Q: spd(),
+  };
+}
+/** 更新量 Φ 与 K = ∇_Z f */
+function update(E, mode, th, ph) {
+  const X = Rot(th), Y = Rot(ph), Z = mul3(X, E.G, T(Y));
+  const K = mode === 'diag' ? had(E.N, Z).map(r => r.map(x => 2 * x)) : mul3(E.P, Z, E.Q).map(r => r.map(x => 2 * x));
+  const Phi = mul3(T(X), K, Y).map(r => r.map(x => x / 2));
+  return { X, Y, Z, K, Phi };
+}
+const J = (E, mode, th, ph) => inner(E.G, update(E, mode, th, ph).Phi);   // tr(GᵀΦ)
+function gradJ(E, mode, th, ph) {
+  const h = 1e-6;
+  return [(J(E, mode, th + h, ph) - J(E, mode, th - h, ph)) / (2 * h), (J(E, mode, th, ph + h) - J(E, mode, th, ph - h)) / (2 * h)];
+}
+/** 梯度下降轨迹：自适应步长（越过谷底就减半，顺利则放大），单步角度不超过 0.06 保证动画平滑 */
+function descend(E, mode, th, ph, steps = 400, cap = 0.06) {
+  const path = [[th, ph]];
+  let lr = 0.05, cur = J(E, mode, th, ph);
+  for (let k = 0; k < steps; k++) {
+    const [gt, gp] = gradJ(E, mode, th, ph), n = Math.hypot(gt, gp);
+    if (n < 1e-7 || lr < 1e-14) break;
+    const step = Math.min(lr, cap / n), t2 = th - step * gt, p2 = ph - step * gp, nxt = J(E, mode, t2, p2);
+    if (nxt > cur) { lr *= 0.5; continue; }
+    th = t2; ph = p2; cur = nxt; lr *= 1.2; path.push([th, ph]);
+  }
+  return path;
+}
+const optCache = new Map();
+function optimum(E, mode) {
+  const key = E.seed + '-' + mode;
+  if (!optCache.has(key)) optCache.set(key, findOptimum(E, mode));
+  return optCache.get(key);
+}
+function findOptimum(E, mode) {
+  let best = [0, 0, Infinity]; const n = 32;
+  for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) {
+    const th = (i + .5) * Math.PI / n, ph = (j + .5) * Math.PI / n, v = J(E, mode, th, ph); if (v < best[2]) best = [th, ph, v];
+  }
+  const p = descend(E, mode, best[0], best[1], 3000, Infinity);
+  return p[p.length - 1];
+}
+/** 驻点条件的不对称度：‖S − Sᵀ‖/‖S‖ */
+const asym = S => fro(sub(S, T(S))) / (fro(S) || 1);
+function analyze(E, mode, th, ph) {
+  const u = update(E, mode, th, ph), sv = svd(E.G);
+  const M = mul3(T(sv.U), u.Phi, sv.V);                       // UᵀΦV：驻点处应为对角阵
+  const XtKY = mul3(T(u.X), u.K, u.Y);
+  return {
+    ...u, sv, M, off: Math.hypot(M[0][1], M[1][0]) / fro(u.Phi),
+    a1: asym(mul(XtKY, T(E.G))), a2: asym(mul(T(E.G), XtKY)),
+    lam: Math.log(Math.abs(M[0][0]) / Math.abs(M[1][1])) / Math.log(sv.s[0] / sv.s[1]),
+  };
+}
+
+/* ================= ① 流水线 ================= */
+const S1 = { E: makeExample(7) };
+const draw1 = VIZ.onRender(() => {
+  const E = S1.E, th = VIZ.num('c1-th'), ph = VIZ.num('c1-ph'), u = update(E, 'diag', th, ph), NZ = had(E.N, u.Z);
+  const mats = [['c1a', E.G], ['c1b', u.Z], ['c1c', E.N], ['c1d', NZ], ['c1e', u.Phi]];
+  const m = Math.max(...mats.flatMap(([, A]) => A.flat().map(Math.abs)));
+  mats.forEach(([id, A]) => VIZ.heatmap(id, A, { pad: 4, values: v => v.toFixed(2), color: v => VIZ.cmap.div(v, m) }));
+  const lhs = inner(E.G, u.Phi), rhs = fro(had(sqrtEl(E.N), u.Z)) ** 2, adam = had(E.N, E.G);
+  VIZ.readout('c1-out',
+`θ = ${th.toFixed(2)}  φ = ${ph.toFixed(2)}     Φ = ${fmtM(u.Phi)}
+原版 Adam 更新 N⊙G = ${fmtM(adam)}   ${th === 0 && ph === 0 ? '<span class="ok">✓ θ=φ=0 时 Φ = N⊙G</span>' : ''}
+内积 tr(GᵀΦ) = <b>${fmt(lhs)}</b>     ‖N^{⊙/2}⊙XGYᵀ‖²_F = ${fmt(rhs)}  ${Math.abs(lhs - rhs) < 1e-9 ? '<span class="ok">✓ 化简正确</span>' : '<span class="bad">✗</span>'}`);
+});
+VIZ.onReady(() => VIZ.stepper('st1', [
+  { tex: String.raw`\mathop{\text{tr}}(\boldsymbol{G}^{\top}\boldsymbol{X}^{\top}(\boldsymbol{N}\odot\boldsymbol{X}\boldsymbol{G}\boldsymbol{Y}^{\top})\boldsymbol{Y}) = \mathop{\text{tr}}(\boldsymbol{Y}\boldsymbol{G}^{\top}\boldsymbol{X}^{\top}(\boldsymbol{N}\odot\boldsymbol{X}\boldsymbol{G}\boldsymbol{Y}^{\top}))`, why: '迹的循环性：把最后的 Y 挪到最前面' },
+  { tex: String.raw`= \mathop{\text{tr}}\big(\boldsymbol{Z}^{\top}(\boldsymbol{N}\odot\boldsymbol{Z})\big),\qquad \boldsymbol{Z}=\boldsymbol{X}\boldsymbol{G}\boldsymbol{Y}^{\top}`, why: '注意 YGᵀXᵀ 正好是 Z 的转置' },
+  { tex: String.raw`= \sum_{i,j} N_{ij} Z_{ij}^2 = \Vert\boldsymbol{N}^{\odot/2}\odot\boldsymbol{X}\boldsymbol{G}\boldsymbol{Y}^{\top}\Vert_F^2`, why: 'tr(AᵀB) 就是逐元素乘积之和；N^{⊙/2} 表示逐元素开平方' },
+]));
+VIZ.slider('c1-th', draw1); VIZ.slider('c1-ph', draw1);
+$('c1-zero').onclick = () => { ['c1-th', 'c1-ph'].forEach(id => { $(id).value = 0; $(id).dispatchEvent(new Event('input')); }); };
+
+/* ================= ② 地形与下降 ================= */
+const GRID = 48;
+const S2 = { E: makeExample(7), mode: 'diag', start: [2.2, 0.5], path: [], u: 0, land: null, best: null };
+function rebuild2(keepStart) {
+  const { E, mode } = S2;
+  S2.land = Array.from({ length: GRID }, (_, i) => Array.from({ length: GRID }, (_, j) => J(E, mode, (i + .5) * Math.PI / GRID, (j + .5) * Math.PI / GRID)));
+  S2.best = optimum(E, mode);
+  if (!keepStart) S2.start = [2.2, 0.5];
+  S2.path = descend(E, mode, S2.start[0], S2.start[1]);
+}
+const cur2 = () => S2.path[Math.min(S2.path.length - 1, Math.round(S2.u * (S2.path.length - 1)))];
+const wrap = a => ((a % Math.PI) + Math.PI) % Math.PI;
+const draw2 = VIZ.onRender(() => {
+  const L = S2.land, lo = Math.min(...L.flat()), hi = Math.max(...L.flat());
+  const g = VIZ.heatmap('c2', L, {
+    color: v => VIZ.cmap.seq((v - lo) / (hi - lo)), rowLabel: 'θ（X 的旋转角）↓', colLabel: 'φ（Y 的旋转角）→',
+    onClick: ({ r, c }) => { S2.start = [(r + .5) * Math.PI / GRID, (c + .5) * Math.PI / GRID]; S2.path = descend(S2.E, S2.mode, ...S2.start); player2.set(0); },
+  });
+  const ctx = $('c2').getContext('2d'), px = ([th, ph]) => [g.ox + wrap(ph) / Math.PI * GRID * g.cs, g.oy + wrap(th) / Math.PI * GRID * g.cs];
+  // 轨迹（跨越周期边界时断开）
+  const n = Math.min(S2.path.length - 1, Math.round(S2.u * (S2.path.length - 1)));
+  ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.beginPath();
+  for (let k = 0; k <= n; k++) {
+    const p = px(S2.path[k]), q = k ? px(S2.path[k - 1]) : p;
+    Math.hypot(p[0] - q[0], p[1] - q[1]) > GRID * g.cs / 2 || !k ? ctx.moveTo(...p) : ctx.lineTo(...p);
+  }
+  ctx.stroke();
+  const dot = (p, col, r, fill) => { ctx.beginPath(); ctx.arc(...p, r, 0, 7); fill ? (ctx.fillStyle = col, ctx.fill()) : (ctx.strokeStyle = col, ctx.lineWidth = 3, ctx.stroke()); };
+  dot(px(S2.best), C.base, 9, false); dot(px(S2.path[0]), C.muted, 4, true); dot(px(cur2()), '#fff', 6, true);
+  // 读数
+  const A = analyze(S2.E, S2.mode, ...cur2()), gr = gradJ(S2.E, S2.mode, ...cur2());
+  const atBest = A.a1 < 1e-3 && A.a2 < 1e-3;
+  VIZ.readout('c2-out',
+`${S2.mode === 'diag' ? '对角（Adam）' : 'Kronecker（Shampoo）'}  例子 #${S2.E.seed}   当前 θ=${wrap(cur2()[0]).toFixed(3)} φ=${wrap(cur2()[1]).toFixed(3)}   目标 tr(GᵀΦ) = <b>${fmt(J(S2.E, S2.mode, ...cur2()))}</b>（地形最小 ${fmt(lo)}）
+目标对 (θ,φ) 的梯度大小 = ${VIZ.fmtE(Math.hypot(...gr))}
+驻点条件 1：XᵀKYGᵀ 的不对称度 = ${VIZ.fmtE(A.a1)}   ${A.a1 < 1e-3 ? '<span class="ok">✓ 对称</span>' : ''}
+驻点条件 2：GᵀXᵀKY 的不对称度 = ${VIZ.fmtE(A.a2)}   ${A.a2 < 1e-3 ? '<span class="ok">✓ 对称</span>' : ''}
+${atBest ? '<span class="ok">✓ 已到达驻点：去第 ③ 节看更新量的形状</span>' : '尚未到达驻点：点 ▶ 播放，或拖动进度条'}`);
+  draw3(); draw4(); draw5();
+});
+const player2 = VIZ.player({ button: 'c2-play', range: 'c2-t', label: 'c2-tv', ms: 3500, onUpdate: u => { S2.u = u; draw2(); } });
+$('c2-mode').onchange = () => { S2.mode = $('c2-mode').value; rebuild2(true); player2.set(0); };
+$('c2-best').onclick = () => { S2.start = S2.best.slice(); S2.path = [S2.best.slice()]; player2.set(1); };
+$('c2-rand').onclick = () => { S2.E = makeExample(Math.floor(Math.random() * 1e6)); rebuild2(false); player2.set(0); };
+
+/* ================= ③ 洗去基底 ================= */
+function draw3() {
+  const A = analyze(S2.E, S2.mode, ...cur2()), sv = A.sv, sp = svd(A.Phi);
+  const cv = $('c3'), W = cv.clientWidth, H = cv.clientHeight;
+  const L = VIZ.plot(cv, { x: [-1.35, 1.35], y: [-1.35, 1.35], equal: true, box: [0, 0, W / 2, H], m: { l: 20, r: 20, t: 26, b: 20 } }).axes({ zero: true });
+  L.text('输入方向：右奇异向量 V', L.L, L.T - 10, { px: true, align: 'left' });
+  L.path(VIZ.linspace(0, 2 * Math.PI, 121).map(t => [Math.cos(t), Math.sin(t)]), { color: C.dim, width: 1 });
+  const vec = (P, M, k, col, dash, lab) => { const v = [M[0][k], M[1][k]]; P.arrow(0, 0, v[0], v[1], { color: col, dash, label: lab }); P.path([[0, 0], [-v[0], -v[1]]], { color: col, dash, width: 1, alpha: .5 }); };
+  vec(L, sv.V, 0, C.base, [], 'v₁'); vec(L, sv.V, 1, C.base, [], 'v₂');
+  vec(L, sp.V, 0, C.new, [6, 4]); vec(L, sp.V, 1, C.new, [6, 4]);
+  const R = VIZ.plot(cv, { keep: true, x: [-1.35, 1.35], y: [-1.35, 1.35], equal: true, box: [W / 2, 0, W, H], m: { l: 20, r: 20, t: 26, b: 20 } }).axes({ zero: true });
+  R.text('输出形状：单位圆经矩阵后的椭圆（按最大奇异值归一）', R.L, R.T - 10, { px: true, align: 'left' });
+  const ell = (M, s1) => VIZ.linspace(0, 2 * Math.PI, 161).map(t => apply(M, [Math.cos(t), Math.sin(t)]).map(x => x / s1));
+  R.path(VIZ.linspace(0, 2 * Math.PI, 121).map(t => [Math.cos(t), Math.sin(t)]), { color: C.approx, width: 1.5, dash: [3, 3] });
+  R.path(ell(S2.E.G, sv.s[0]), { color: C.base, width: 2.4 }).path(ell(A.Phi, sp.s[0]), { color: C.new, width: 2.4, dash: [6, 4] });
+  [0, 1].forEach(k => {
+    R.arrow(0, 0, sv.U[0][k] * sv.s[k] / sv.s[0], sv.U[1][k] * sv.s[k] / sv.s[0], { color: C.base, label: k ? 'σ₂u₂' : 'σ₁u₁' });
+    R.arrow(0, 0, sp.U[0][k] * sp.s[k] / sp.s[0], sp.U[1][k] * sp.s[k] / sp.s[0], { color: C.new, dash: [6, 4] });
+  });
+  // 主轴夹角（奇异值接近时奇异向量不唯一，此时只看非对角占比）
+  const ang = (a, b) => { const c = Math.abs(a[0] * b[0] + a[1] * b[1]); return Math.acos(Math.min(1, c)) * 180 / Math.PI; };
+  const col = (M, k) => [M[0][k], M[1][k]];
+  const dU = Math.min(ang(col(sv.U, 0), col(sp.U, 0)), ang(col(sv.U, 0), col(sp.U, 1)));
+  const dV = Math.min(ang(col(sv.V, 0), col(sp.V, 0)), ang(col(sv.V, 0), col(sp.V, 1)));
+  const degenerate = Math.abs(sp.s[0] - sp.s[1]) / sp.s[0] < 1e-3;
+  const muon = mul(sv.U, T(sv.V));
+  VIZ.readout('c3-out',
+`G 的奇异值 Σ = diag(${sv.s.map(x => x.toFixed(3)).join(', ')})
+UᵀΦV = ${fmtM(A.M)}     非对角占比 = <b>${VIZ.fmtE(A.off)}</b>  ${A.off < 1e-3 ? '<span class="ok">✓ Φ = U D Vᵀ：基底已被洗掉</span>' : '<span class="bad">（不是对角阵：Φ 的主轴被拧歪了）</span>'}
+主轴夹角：左奇异向量 ${dU.toFixed(2)}°   右奇异向量 ${dV.toFixed(2)}°${degenerate ? '（Φ 两个奇异值几乎相等，主轴不唯一，以非对角占比为准）' : ''}
+D = diag(${A.M[0][0].toFixed(3)}, ${A.M[1][1].toFixed(3)})${A.off < 1e-3 ? '' : '（仅在驻点处有意义）'}     Muon 更新 UVᵀ = ${fmtM(muon)}（相当于 D = I）`);
+}
+
+/* ================= ④ 均值不等式 ================= */
+function draw4() {
+  const s1 = VIZ.num('c4-s1'), s2 = VIZ.num('c4-s2'), t = VIZ.num('c4-t');
+  const f = x => s1 * Math.exp(x / 2) + s2 * Math.exp(-x / 2), lb = 2 * Math.sqrt(s1 * s2);
+  const ys = VIZ.linspace(-4, 4, 200).map(f), yMax = Math.min(Math.max(...ys), lb * 4);
+  const P = VIZ.plot('c4', { x: [-4, 4], y: [0, yMax * 1.05], m: { l: 40, r: 14, t: 16, b: 30 } })
+    .axes({ xTicks: [-4, -2, 0, 2, 4], yTicks: 'auto', xLabel: 'log(d₁/d₂)', yLabel: 'σ₁d₁+σ₂d₂' });
+  const tI = Math.log(s2 / s1), tW = Math.log(s1 / s2);
+  P.hline(lb, { color: C.approx, dash: [5, 4], width: 1.5 });
+  P.vline(tI, { color: C.base, width: 2, dash: [] }).vline(0, { color: C.new, width: 2, dash: [] }).vline(tW, { color: C.warn, width: 2, dash: [] });
+  P.fn(f, { color: C.text, width: 2.4 }).dot(t, f(t), { r: 6, color: C.text });
+  const grid = VIZ.linspace(-4, 4, 8001), tMin = grid.reduce((b, x) => (f(x) < f(b) ? x : b), grid[0]);
+  const Ad = analyze(S2.E, 'diag', ...optimum(S2.E, 'diag')), Ak = analyze(S2.E, 'kron', ...optimum(S2.E, 'kron'));
+  const pos = l => (Math.abs(l) <= 1 ? `<span class="ok">介于两端之间</span>` : `<span class="bad">超出两端</span>`);
+  VIZ.readout('c4-out',
+`当前 d₁/d₂ = e^${t.toFixed(2)}：σ₁d₁+σ₂d₂ = ${fmt(f(t))}    下界 2√(σ₁σ₂) = ${fmt(lb)}
+数值最低点 log(d₁/d₂) = ${fmt(tMin, 3)}   理论 log(σ₂/σ₁) = ${fmt(tI, 3)}  ${Math.abs(tMin - tI) < 2e-3 ? '<span class="ok">✓ 最小值在 d∝1/σ</span>' : ''}   最小值 = ${fmt(f(tI))} ${Math.abs(f(tI) - lb) < 1e-9 ? '<span class="ok">✓ 等于下界</span>' : ''}
+均匀点 0 = 理想点与最糟点的中点：(${fmt(tI, 3)} + ${fmt(tW, 3)})/2 = ${fmt((tI + tW) / 2, 3)} <span class="ok">✓</span>
+本页数值观察（第 ② 节例子 #${S2.E.seed}，2×2）：实际最优解的位置 λ（−1 理想 / 0 均匀 / +1 最糟）
+   对角（Adam）λ = <b>${fmt(Ad.lam, 3)}</b> ${pos(Ad.lam)}     Kronecker（Shampoo）λ = <b>${fmt(Ak.lam, 3)}</b> ${pos(Ak.lam)}`);
+}
+['c4-s1', 'c4-s2', 'c4-t'].forEach(id => VIZ.slider(id, draw4));
+
+/* ================= ⑤ 行列式 ================= */
+function draw5() {
+  const E = S2.E, cv = $('c5'), W = cv.clientWidth, H = cv.clientHeight, phs = VIZ.linspace(0, Math.PI, 7).slice(0, 6);
+  const th = VIZ.linspace(0, Math.PI, 121), formula = Math.abs(det(E.P) * det(E.G) * det(E.Q));
+  const curves = mode => phs.map(ph => th.map(t => [t, Math.abs(det(update(E, mode, t, ph).Phi))]));
+  const cd = curves('diag'), ck = curves('kron');
+  const yMax = Math.max(...cd.flat().map(p => p[1]), formula) * 1.15;
+  const panel = (box, cs, col, title, keep) => {
+    const P = VIZ.plot(cv, { keep, x: [0, Math.PI], y: [0, yMax], box, m: { l: 40, r: 12, t: 22, b: 30 } })
+      .axes({ xTicks: [0, Math.PI / 2, Math.PI], xFmt: v => (v === 0 ? '0' : v < 2 ? 'π/2' : 'π'), yTicks: 'auto', xLabel: 'θ' });
+    P.text(title, P.L + 4, P.T - 8, { px: true, align: 'left' });
+    cs.forEach((c, k) => P.path(c, { color: VIZ.alpha(col, .35 + .1 * k), width: 1.6 }));
+    return P;
+  };
+  panel([0, 0, W / 2, H], cd, C.pa, '对角（Adam）：|det Φ| 随旋转变化', false);
+  panel([W / 2, 0, W, H], ck, C.pb, 'Kronecker（Shampoo）：|det Φ| 恒定', true).hline(formula, { color: C.text, dash: [6, 4], width: 1.5 });
+  const dv = cd.flat().map(p => p[1]), kv = ck.flat().map(p => p[1]);
+  const kErr = Math.max(...kv.map(v => Math.abs(v - formula)));
+  const dOpt = Math.abs(det(update(E, 'diag', ...optimum(E, 'diag')).Phi)), d0 = Math.abs(det(had(E.N, E.G)));
+  S5.base =
+`例子 #${E.seed}
+Kronecker：|det Φ| 与 |det P·det G·det Q| = ${fmt(formula, 3)} 的最大偏差 ${VIZ.fmtE(kErr)}  ${kErr < 1e-9 ? '<span class="ok">✓ 恒定</span>' : '<span class="bad">✗</span>'}
+对角：|det Φ| 在 ${fmt(Math.min(...dv), 3)} 到 ${fmt(Math.max(...dv), 3)} 之间变化   原版 Adam（θ=φ=0）${fmt(d0, 3)} → 最优坐标系 ${fmt(dOpt, 3)}  <span class="bad">不守恒</span>`;
+  VIZ.readout('c5-out', S5.base + (S5.batch ? '\n' + S5.batch : ''));
+}
+const S5 = { base: '', batch: '' };
+$('c5-batch').onclick = () => {
+  VIZ.readout('c5-out', S5.base + '\n🧪 计算中（约 1–2 秒）…');
+  setTimeout(runBatch, 30);
+};
+function runBatch() {
+  const stats = { diag: { off: [], lam: [], dr: [] }, kron: { off: [], lam: [], dr: [] } };
+  for (let s = 0; s < 200; s++) {
+    const E = makeExample(1000 + s);
+    ['diag', 'kron'].forEach(mode => {
+      const A = analyze(E, mode, ...optimum(E, mode)), d0 = Math.abs(det(update(E, mode, 0, 0).Phi));
+      stats[mode].off.push(A.off); stats[mode].lam.push(A.lam); stats[mode].dr.push(Math.abs(det(A.Phi)) / d0);
+    });
+  }
+  const q = (a, p) => a.slice().sort((x, y) => x - y)[Math.floor(p * (a.length - 1))];
+  const row = (name, st) => {
+    const washed = st.off.filter(x => x < 1e-3).length;
+    return `${name}  基底被洗掉 ${washed}/200 ${washed === 200 ? '<span class="ok">✓</span>' : ''}   λ∈[−1,1] ${st.lam.filter(l => Math.abs(l) <= 1).length}/200   λ 中位数 ${fmt(q(st.lam, .5), 2)}\n` +
+           `${' '.repeat(name.length)}  |det Φ| 最优处/原版 的 10%/50%/90% 分位：${q(st.dr, .1).toFixed(2)} / ${q(st.dr, .5).toFixed(2)} / ${q(st.dr, .9).toFixed(2)}`;
+  };
+  S5.batch = `🧪 200 个随机 2×2 例子（“基底被洗掉”= UᵀΦV 非对角占比 < 1e-3）：\n${row('对角     ', stats.diag)}\n${row('Kronecker', stats.kron)}\n仅 2×2 小实验：“洗去基底”每次都成立；“均匀化”与对角情形的“行列式守恒”并不可靠。不能代表大矩阵。`;
+  VIZ.readout('c5-out', S5.base + '\n' + S5.batch);
+}
+
+rebuild2(false);
+VIZ.start();
+</script>
+</body>
+</html>

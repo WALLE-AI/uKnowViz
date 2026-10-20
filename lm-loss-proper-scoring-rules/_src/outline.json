@@ -1,0 +1,32 @@
+{
+  "slug": "lm-loss-proper-scoring-rules",
+  "title": "除了交叉熵，LM Loss 还有什么选择？",
+  "source": {"url": "https://kexue.fm/archives/11854", "author": "苏剑林", "site": "kexue.fm"},
+  "hook": "交叉熵真的是语言模型唯一的选择吗？如果要换，能换成什么？换了又会怎样？",
+  "one_liner": "能训练 LLM 的损失 = 恰当评分规则：任取凹函数 H，它的切线就是损失；交叉熵是唯一只看 q_i 的那个，并与 Softmax 配对（Fenchel-Young）",
+  "main_analogy": "给天气预报员设计考核规则：既要能逐天打分（采样），又要让“说真话”是最优策略（恰当）",
+  "sections": [
+    {"id": "s1", "title": "两个硬约束：能逐条打分 + 说真话最划算",
+      "claim": "语料零散到来，损失必须写成 E_{i~p}[S(q,i)]（关于 p 线性），且固定 p 时最小值在 q=p",
+      "viz": {"recipe": "H 迭代/采样流", "moves": "“白切X”样本一条条到来，逐条损失的累计平均收敛到期望损失",
+        "controls": ["播放器", "模型猜测 q 接近 p 的程度", "重新采样"], "readout": "累计平均 vs 精确期望；TV 需要 p_i 无法逐条计算"}},
+    {"id": "s2", "title": "可采样 ≠ 恰当：最小值必须在 q=p",
+      "viz": {"recipe": "C 函数族 + 游标", "moves": "固定 p，三条 L(p,q) 曲线；交叉熵/Brier 的最低点跟着 p 走，线性打分的最低点跑到边界",
+        "controls": ["p 滑块"], "readout": "各曲线 argmin vs p，✓/✗"}},
+    {"id": "s3", "title": "几何核心：损失 = 凹函数 H 的切线",
+      "claim": "L(p,q) 关于 p 是 H 在 q 处的切线；S(q,i) 就是切线在顶点 e_i 处的高度",
+      "viz": {"recipe": "C + 播放器（滚动切线，包络画出 H）", "moves": "切线沿 H 滚动；切线两端高度=两个词的罚分；切线与曲线的缝隙=遗憾（Bregman 散度/KL）",
+        "controls": ["评分族", "α", "q", "p", "播放"], "readout": "切线公式（数值求导） vs 表格公式 ✓；缝隙 vs KL ✓"}},
+    {"id": "s4", "title": "评分家族：都是交叉熵的推广，但只有交叉熵只看 q_i",
+      "viz": {"recipe": "C 函数族 + 柱状对比 + stepper", "moves": "α→1 时各家族罚分曲线贴合 -log q；固定 q_i 改变其余概率的分法，只有交叉熵不变",
+        "controls": ["α", "q_i", "其余概率分法"], "readout": "与 -log q 的最大偏差；各评分随分法的变化幅度"}},
+    {"id": "s5", "title": "Softmax 下的梯度：交叉熵不怕“自信地错误”",
+      "viz": {"recipe": "上下分栏（损失/梯度）+ H 迭代轨迹", "moves": "margin 游标；从“自信地错误”出发做梯度下降，交叉熵快速走出，平方损失卡住",
+        "controls": ["margin", "初始 margin", "学习率", "播放"], "readout": "梯度公式 vs 数值差分 ✓；达到 q>0.9 的步数"}},
+    {"id": "s6", "title": "反推最优激活：Fenchel-Young 与 Entmax",
+      "viz": {"recipe": "目标函数 argmax + 激活曲线 + 4 词柱状", "moves": "α 从 1 增大，Softmax 变成会输出精确 0 的 Sparsemax/Entmax",
+        "controls": ["Δz", "α", "随机 logits"], "readout": "argmax 数值解 vs 二分法闭式解 ✓；∇Φ = q ✓（数值差分）"}}
+  ],
+  "experiments": [],
+  "glossary": ["交叉熵", "目标分布/预测分布", "概率单纯形", "恰当评分规则", "凹函数", "切线/切平面", "Bregman 散度/KL", "Brier 评分", "Tsallis/球面/Rényi 评分", "Logits", "Softmax", "凸性", "梯度消失", "凸共轭", "Fenchel-Young 损失", "Sparsemax/Entmax", "拉格朗日乘子"]
+}
